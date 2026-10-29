@@ -1,0 +1,15 @@
+#!/bin/sh
+# S10e: make the host see the USB gadget again without a replug. Toggles the
+# D+ pull-up (soft_connect); unbinding the UDC hangs on this controller.
+# A dwc3 role switch (host mode for OTG, then back) re-creates the UDC and
+# leaves the configfs gadget unbound: then bind it again instead.
+G=/sys/kernel/config/usb_gadget/g1
+U=$(ls /sys/class/udc | head -n1)
+[ -n "$U" ] || { echo "no UDC" >&2; exit 1; }
+if [ -d $G ] && [ -z "$(cat $G/UDC)" ]; then
+	echo "$U" > $G/UDC
+	exit
+fi
+echo disconnect > /sys/class/udc/$U/soft_connect
+sleep 2
+echo connect > /sys/class/udc/$U/soft_connect

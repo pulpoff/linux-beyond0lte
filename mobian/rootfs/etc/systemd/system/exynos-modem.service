@@ -1,0 +1,24 @@
+[Unit]
+Description=Exynos 9820 modem (CP boot + IPC/RFS daemon)
+Documentation=file:///usr/local/share/doc/exynos-modem/README
+# kill switches: kernel cmdline s10e.nomodem, or touch /etc/exynos-cp/disable
+ConditionKernelCommandLine=!s10e.nomodem
+ConditionPathExists=!/etc/exynos-cp/disable
+ConditionPathExists=/var/lib/exynos-cp/nv_data.bin
+After=local-fs.target systemd-modules-load.service
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStartPre=/sbin/modprobe exynos9820-cp
+# boots the CP from the radio partition; a failed boot fails the unit
+ExecStartPre=/usr/local/sbin/exynos-cpboot
+ExecStart=/usr/local/sbin/exynos-cpd --quiet-rfs
+# cpd exits when the CP goes away; the restart boots it again
+Restart=always
+RestartSec=10
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

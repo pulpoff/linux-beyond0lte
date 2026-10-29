@@ -1,0 +1,116 @@
+diff --git a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/chip.c b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/chip.c
+index 4adc0d0e4..292d5b7d6 100644
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/chip.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/chip.c
+@@ -740,6 +740,7 @@ static u32 brcmf_chip_tcm_rambase(struct brcmf_chip_priv *ci)
+ 		return 0x160000;
+ 	case BRCM_CC_43751_CHIP_ID:
+ 	case BRCM_CC_43752_CHIP_ID:
++	case BRCM_CC_4375_CHIP_ID:
+ 	case BRCM_CC_4377_CHIP_ID:
+ 		return 0x170000;
+ 	case BRCM_CC_4378_CHIP_ID:
+diff --git a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c
+index 13662aa4b..19edd7f73 100644
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c
+@@ -67,6 +67,7 @@ BRCMF_FW_DEF(4366B, "brcmfmac4366b-pcie");
+ BRCMF_FW_DEF(4366C, "brcmfmac4366c-pcie");
+ BRCMF_FW_DEF(4371, "brcmfmac4371-pcie");
+ BRCMF_FW_CLM_DEF(43752, "brcmfmac43752-pcie");
++BRCMF_FW_CLM_DEF(4375B1, "brcmfmac4375b1-pcie");
+ BRCMF_FW_CLM_DEF(4377B3, "brcmfmac4377b3-pcie");
+ BRCMF_FW_CLM_DEF(4378B1, "brcmfmac4378b1-pcie");
+ BRCMF_FW_CLM_DEF(4378B3, "brcmfmac4378b3-pcie");
+@@ -108,6 +109,7 @@ static const struct brcmf_firmware_mapping brcmf_pcie_fwnames[] = {
+ 	BRCMF_FW_ENTRY(BRCM_CC_43666_CHIP_ID, 0xFFFFFFF0, 4366C),
+ 	BRCMF_FW_ENTRY(BRCM_CC_4371_CHIP_ID, 0xFFFFFFFF, 4371),
+ 	BRCMF_FW_ENTRY(BRCM_CC_43752_CHIP_ID, 0xFFFFFFFF, 43752),
++	BRCMF_FW_ENTRY(BRCM_CC_4375_CHIP_ID, 0xFFFFFFFF, 4375B1),
+ 	BRCMF_FW_ENTRY(BRCM_CC_4377_CHIP_ID, 0xFFFFFFFF, 4377B3), /* revision ID 4 */
+ 	BRCMF_FW_ENTRY(BRCM_CC_4378_CHIP_ID, 0x0000000F, 4378B1), /* revision ID 3 */
+ 	BRCMF_FW_ENTRY(BRCM_CC_4378_CHIP_ID, 0xFFFFFFE0, 4378B3), /* revision ID 5 */
+@@ -213,6 +215,7 @@ static const struct brcmf_firmware_mapping brcmf_pcie_fwnames[] = {
+ 						 BRCMF_PCIE_64_MB_INT_D2H7_DB0 | \
+ 						 BRCMF_PCIE_64_MB_INT_D2H7_DB1)
+ 
++#define BRCMF_PCIE_SHARED_VERSION_6		6
+ #define BRCMF_PCIE_SHARED_VERSION_7		7
+ #define BRCMF_PCIE_MIN_SHARED_VERSION		5
+ #define BRCMF_PCIE_MAX_SHARED_VERSION		BRCMF_PCIE_SHARED_VERSION_7
+@@ -221,6 +224,10 @@ static const struct brcmf_firmware_mapping brcmf_pcie_fwnames[] = {
+ #define BRCMF_PCIE_SHARED_DMA_2B_IDX		0x100000
+ #define BRCMF_PCIE_SHARED_HOSTRDY_DB1		0x10000000
+ 
++#define BRCMF_HOSTCAP_H2D_ENABLE_HOSTRDY	0x00000400
++#define BRCMF_HOSTCAP_DS_NO_OOB_DW		0x00001000
++#define BRCMF_HOSTCAP_UR_FW_NO_TRAP		0x00800000
++
+ #define BRCMF_PCIE_FLAGS_HTOD_SPLIT		0x4000
+ #define BRCMF_PCIE_FLAGS_DTOH_SPLIT		0x8000
+ 
+@@ -235,6 +242,7 @@ static const struct brcmf_firmware_mapping brcmf_pcie_fwnames[] = {
+ #define BRCMF_SHARED_DMA_SCRATCH_ADDR_OFFSET	56
+ #define BRCMF_SHARED_DMA_RINGUPD_LEN_OFFSET	64
+ #define BRCMF_SHARED_DMA_RINGUPD_ADDR_OFFSET	68
++#define BRCMF_SHARED_HOST_CAP_OFFSET		84
+ 
+ #define BRCMF_RING_H2D_RING_COUNT_OFFSET	0
+ #define BRCMF_RING_D2H_RING_COUNT_OFFSET	1
+@@ -1627,7 +1635,8 @@ brcmf_pcie_init_share_ram_info(struct brcmf_pciedev_info *devinfo,
+ 
+ 	shared->flags = brcmf_pcie_read_tcm32(devinfo, sharedram_addr);
+ 	shared->version = (u8)(shared->flags & BRCMF_PCIE_SHARED_VERSION_MASK);
+-	brcmf_dbg(PCIE, "PCIe protocol version %d\n", shared->version);
++	brcmf_dbg(PCIE, "PCIe protocol version %d, flags %08x\n", shared->version,
++		  shared->flags);
+ 	if ((shared->version > BRCMF_PCIE_MAX_SHARED_VERSION) ||
+ 	    (shared->version < BRCMF_PCIE_MIN_SHARED_VERSION)) {
+ 		brcmf_err(bus, "Unsupported PCIE version %d\n",
+@@ -1663,6 +1672,18 @@ brcmf_pcie_init_share_ram_info(struct brcmf_pciedev_info *devinfo,
+ 	brcmf_dbg(PCIE, "max rx buf post %d, rx dataoffset %d\n",
+ 		  shared->max_rxbufpost, shared->rx_dataoffset);
+ 
++	if (shared->version >= BRCMF_PCIE_SHARED_VERSION_6) {
++		u32 host_cap = shared->version | BRCMF_HOSTCAP_DS_NO_OOB_DW |
++			       BRCMF_HOSTCAP_UR_FW_NO_TRAP;
++
++		if (shared->flags & BRCMF_PCIE_SHARED_HOSTRDY_DB1)
++			host_cap |= BRCMF_HOSTCAP_H2D_ENABLE_HOSTRDY;
++		brcmf_pcie_write_tcm32(devinfo,
++				       sharedram_addr + BRCMF_SHARED_HOST_CAP_OFFSET,
++				       host_cap);
++		brcmf_dbg(PCIE, "host_cap %08x\n", host_cap);
++	}
++
+ 	brcmf_pcie_bus_console_init(devinfo);
+ 	brcmf_pcie_bus_console_read(devinfo, false);
+ 
+@@ -2747,6 +2768,7 @@ static const struct pci_device_id brcmf_pcie_devid_table[] = {
+ 	BRCMF_PCIE_DEVICE(BRCM_PCIE_4366_5G_DEVICE_ID, BCA),
+ 	BRCMF_PCIE_DEVICE(BRCM_PCIE_4371_DEVICE_ID, WCC),
+ 	BRCMF_PCIE_DEVICE(BRCM_PCIE_43596_DEVICE_ID, CYW),
++	BRCMF_PCIE_DEVICE(BRCM_PCIE_4375_DEVICE_ID, WCC_SEED),
+ 	BRCMF_PCIE_DEVICE(BRCM_PCIE_4377_DEVICE_ID, WCC_SEED),
+ 	BRCMF_PCIE_DEVICE(BRCM_PCIE_4378_DEVICE_ID, WCC_SEED),
+ 	BRCMF_PCIE_DEVICE(BRCM_PCIE_4387_DEVICE_ID, WCC_SEED),
+diff --git a/drivers/net/wireless/broadcom/brcm80211/include/brcm_hw_ids.h b/drivers/net/wireless/broadcom/brcm80211/include/brcm_hw_ids.h
+index df3b67ba4..0300480dd 100644
+--- a/drivers/net/wireless/broadcom/brcm80211/include/brcm_hw_ids.h
++++ b/drivers/net/wireless/broadcom/brcm80211/include/brcm_hw_ids.h
+@@ -54,6 +54,7 @@
+ #define BRCM_CC_4371_CHIP_ID		0x4371
+ #define BRCM_CC_43751_CHIP_ID		43751
+ #define BRCM_CC_43752_CHIP_ID		43752
++#define BRCM_CC_4375_CHIP_ID		0x4375
+ #define BRCM_CC_4377_CHIP_ID		0x4377
+ #define BRCM_CC_4378_CHIP_ID		0x4378
+ #define BRCM_CC_4387_CHIP_ID		0x4387
+@@ -96,6 +97,7 @@
+ #define BRCM_PCIE_4371_DEVICE_ID	0x440d
+ #define BRCM_PCIE_43596_DEVICE_ID	0x4415
+ #define BRCM_PCIE_43752_DEVICE_ID	0x449d
++#define BRCM_PCIE_4375_DEVICE_ID	0x4475
+ #define BRCM_PCIE_4377_DEVICE_ID	0x4488
+ #define BRCM_PCIE_4378_DEVICE_ID	0x4425
+ #define BRCM_PCIE_4387_DEVICE_ID	0x4433

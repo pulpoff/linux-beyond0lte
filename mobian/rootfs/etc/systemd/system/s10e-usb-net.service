@@ -1,0 +1,13 @@
+[Unit]
+Description=S10e: USB network on the gadget the initramfs left up (172.16.42.1)
+BindsTo=sys-subsystem-net-devices-usb0.device
+After=sys-subsystem-net-devices-usb0.device
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/ip link set usb0 up
+ExecStart=-/usr/sbin/ip addr add 172.16.42.1/24 dev usb0
+
+[Install]
+WantedBy=sys-subsystem-net-devices-usb0.device

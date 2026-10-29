@@ -1,0 +1,40 @@
+#!/bin/sh
+# Load panfrost only when the G3D power domain is on. Mainline cannot switch
+# G3D back on safely (no TZPC restore), so the DT leaves it as the bootloader
+# set it; any GPU register access with it off aborts the SoC. On success,
+# tell phosh to render on the GPU (see phosh.service.d/gpu.conf).
+env=/run/s10e-gpu.env
+rm -f $env
+st=$(python3 -I -c '
+import mmap, os, struct
+fd = os.open("/dev/mem", os.O_RDONLY | os.O_SYNC)
+m = mmap.mmap(fd, 0x1000, mmap.MAP_SHARED, mmap.PROT_READ, offset=0x15862000)
+print(struct.unpack("<I", m[0x104:0x108])[0] & 1)')
+if [ "$st" != 1 ]; then
+	echo "G3D power domain is off (status $st); not loading panfrost"
+	exit 0
+fi
+modprobe panfrost || exit 0
+for i in $(seq 1 50); do [ -e /dev/dri/renderD128 ] && break; sleep 0.1; done
+[ -e /dev/dri/renderD128 ] || exit 0
+# /etc/s10e/gpu-renderer picks the API: "gl" (default) or "vulkan".
+# PanVK calls Bifrost v7 "not well-tested" and hides it behind a flag, and
+# reports API 1.0, which wlroots rejects (it wants 1.1; the features are there).
+mode=$(cat /etc/s10e/gpu-renderer 2>/dev/null || echo gl)
+if [ "$mode" = vulkan ]; then
+	printf 'WLR_RENDER_DRM_DEVICE=/dev/dri/renderD128\nWLR_RENDERER=vulkan\nGSK_RENDERER=vulkan\nPAN_I_WANT_A_BROKEN_VULKAN_DRIVER=1\nMESA_VK_VERSION_OVERRIDE=1.1\n' > $env
+else
+	# With the DECON KMS driver ("exynos") Mesa's kmsro renders on panfrost
+	# straight into scanout buffers; forcing renderD128 would hand KMS
+	# non-contiguous panfrost buffers it cannot scan out. simpledrm needs it.
+	modprobe exynos9820_decon_kms 2>/dev/null
+	kms=
+	for c in /sys/class/drm/card*; do
+		[ "$(basename "$(readlink $c/device/driver)")" = exynos9820-decon-kms ] && kms=1
+	done
+	if [ -n "$kms" ]; then
+		printf 'GSK_RENDERER=ngl\n' > $env
+	else
+		printf 'WLR_RENDER_DRM_DEVICE=/dev/dri/renderD128\nGSK_RENDERER=ngl\n' > $env
+	fi
+fi

@@ -1,0 +1,14 @@
+{
+  "name": "Samsung Galaxy S10e",
+  "x-res": 1080,
+  "y-res": 2280,
+  "width": 63,
+  "height": 133,
+  "border-radius": 110,
+  "cutouts": [
+    {
+      "name": "camera",
+      "path": "M 931,0 H 1080 V 116 H 931 Z"
+    }
+  ]
+}

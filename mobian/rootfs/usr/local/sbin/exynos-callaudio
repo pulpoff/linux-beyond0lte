@@ -1,0 +1,30 @@
+#!/bin/sh
+# AP half of a handset call on the S10e: calliope runs the voice path (VSS <->
+# codec/amps), our two PCMs only keep the codec, amps and UAIFs powered.
+# Called by exynos-cpd: exynos-callaudio start|stop
+exec 9>/run/exynos-callaudio.lock
+flock 9
+D=/sys/kernel/debug/exynos9820-abox/firmware
+U=$(id -u user 2>/dev/null)
+pw() { [ -n "$U" ] && su user -c "XDG_RUNTIME_DIR=/run/user/$U systemctl --user $1 pipewire.socket pipewire-pulse.socket pipewire pipewire-pulse wireplumber"; }
+log() { logger -t exynos-callaudio "$*"; }
+case "$1" in
+start)
+	grep -q "in_call 1" $D && exit 0
+	pw stop; sleep 0.5			# the firmware boots only with our PCMs closed
+	echo boot > $D || { log "firmware boot failed"; pw start; exit 1; }
+	sleep 0.2
+	aplay -q -D hw:0,1 -f S32_LE -r 48000 -c 4 /dev/zero </dev/null >/dev/null 2>&1 9>&- &
+	arecord -q -D hw:0,0 -f S32_LE -r 48000 -c 2 /dev/null </dev/null >/dev/null 2>&1 9>&- &
+	sleep 0.3
+	echo call > $D || log "call setup failed"
+	log "$(head -1 $D)" ;;
+stop)
+	echo hangup > $D 2>/dev/null
+	killall -q aplay arecord; sleep 0.3
+	echo stop > $D
+	amixer -q -c0 cset name='SPK Digital PCM Volume' 769
+	amixer -q -c0 cset name='RCV Analog PCM Volume' 17
+	pw start
+	log "$(head -1 $D)" ;;
+esac

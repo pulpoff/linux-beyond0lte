@@ -1,0 +1,6 @@
+#!/bin/sh
+# Mainline arm64 /proc/cpuinfo has no "model name", so Settings > About shows
+# no processor; bind a copy that names the SoC over it.
+awk '/^processor/ { print; print "model name\t: Samsung Exynos 9820"; next } { print }' \
+	/proc/cpuinfo > /run/s10e-cpuinfo
+mount --bind /run/s10e-cpuinfo /proc/cpuinfo

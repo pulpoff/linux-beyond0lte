@@ -1,0 +1,157 @@
+#!/bin/busybox sh
+# S10e (beyond0lte) mainline initramfs: a USB debug shell (NCM + RNDIS + ACM,
+# telnet + SSH on 172.16.42.1), then Mobian from the "linux" partition.
+# Stays in the shell when the command line has s10e.stay (U-Boot's "Rescue
+# shell" entry) or when the last boot into Mobian never reached multi-user.
+
+/bin/busybox mkdir -p /bin /sbin /usr/bin /usr/sbin /proc /sys /dev /tmp /run /mnt
+/bin/busybox --install -s
+
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev 2>/dev/null
+mkdir -p /dev/pts && mount -t devpts devpts /dev/pts
+mount -t tmpfs tmpfs /tmp
+mount -t tmpfs tmpfs /run
+mount -t configfs configfs /sys/kernel/config
+mount -t pstore pstore /sys/fs/pstore 2>/dev/null
+
+# On the screen only for a verbose boot: on a quiet one any write to tty0
+# makes fbcon take over and wipes the Debian logo.
+grep -qw quiet /proc/cmdline && TTY=/dev/null || TTY=/dev/tty0
+log() { echo "s10e-init: $*" > /dev/kmsg; echo "s10e-init: $*" > $TTY 2>/dev/null; }
+log "up, kernel $(uname -r)"
+
+IP=172.16.42.1
+G=/sys/kernel/config/usb_gadget/g1
+
+gadget() {
+	mkdir -p $G && cd $G || return 1
+	echo 0x18d1 > idVendor
+	echo 0xd001 > idProduct
+	mkdir -p strings/0x409
+	echo "Samsung" > strings/0x409/manufacturer
+	echo "s10e mainline debug" > strings/0x409/product
+	echo s10e > strings/0x409/serialnumber
+	mkdir -p configs/c.1/strings/0x409
+	echo "NCM+RNDIS+ACM" > configs/c.1/strings/0x409/configuration
+	echo 500 > configs/c.1/MaxPower
+	for f in ncm.usb0 rndis.usb0 acm.usb0; do
+		mkdir -p functions/$f 2>/dev/null || { log "gadget: no $f"; continue; }
+		# fixed MACs (locally administered): the PC sees the same interface
+		# every boot instead of a new random enx* name
+		case $f in
+		ncm.*)   echo 02:5e:10:e0:00:01 > functions/$f/dev_addr
+			 echo 02:5e:10:e0:00:02 > functions/$f/host_addr ;;
+		rndis.*) echo 02:5e:10:e0:00:03 > functions/$f/dev_addr
+			 echo 02:5e:10:e0:00:04 > functions/$f/host_addr ;;
+		esac
+		ln -s functions/$f configs/c.1/ 2>/dev/null || log "gadget: no $f"
+	done
+	cd /
+}
+
+bind_udc() {
+	for i in $(seq 30); do
+		UDC=$(ls /sys/class/udc 2>/dev/null | head -n1)
+		[ -n "$UDC" ] && break
+		sleep 1
+	done
+	if [ -z "$UDC" ]; then log "no UDC after 30 s"; return 1; fi
+	echo "$UDC" > $G/UDC && log "gadget bound to $UDC"
+}
+
+# Mobian's mobile-usb-gadget wants the controller to itself.
+gadget_down() {
+	echo "" > $G/UDC 2>/dev/null
+	rm -f $G/configs/c.1/*.usb0 2>/dev/null
+	for f in ncm.usb0 rndis.usb0 acm.usb0; do rmdir $G/functions/$f 2>/dev/null; done
+	rmdir $G/configs/c.1/strings/0x409 $G/configs/c.1 $G/strings/0x409 $G 2>/dev/null
+}
+
+gadget && bind_udc
+
+for n in usb0 usb1; do ip link set $n up 2>/dev/null; done
+ip addr add $IP/24 dev usb0 2>/dev/null && log "usb0 $IP"
+ip link set lo up
+
+cat > /tmp/udhcpd.conf <<EOC
+start 172.16.42.2
+end 172.16.42.2
+interface usb0
+option subnet 255.255.255.0
+max_leases 1
+lease_file /tmp/udhcpd.leases
+EOC
+touch /tmp/udhcpd.leases
+udhcpd /tmp/udhcpd.conf
+
+telnetd -l /bin/sh -b $IP
+mkdir -p /etc/dropbear
+dropbear -R -B -p $IP:22 && log "ssh root@$IP"
+
+( while true; do
+	[ -c /dev/ttyGS0 ] && setsid sh -c 'exec sh </dev/ttyGS0 >/dev/ttyGS0 2>&1'
+	sleep 1
+done ) &
+CONSOLE_LOOP=$!
+log "ready"
+
+part() {
+	for u in /sys/class/block/*/uevent; do
+		grep -qx "PARTNAME=$1" "$u" && { echo /dev/$(basename $(dirname $u)); return; }
+	done
+}
+
+mobian() {
+	i=0; while [ -z "$(part linux)" ] && [ $i -lt 15 ]; do sleep 1; i=$((i+1)); done
+	R=$(part linux)
+	[ -n "$R" ] || { log "mobian: no partition named linux"; return 1; }
+	mkdir -p /mnt/root
+	mount -t ext4 -o rw,noatime $R /mnt/root 2>/dev/null || { log "mobian: cannot mount $R"; return 1; }
+	# The image is shrunk to its content: grow it to the whole partition (a
+	# no-op once it fills it). Online, so no fsck; resize2fs reads /etc/mtab.
+	ln -sf /proc/mounts /etc/mtab
+	resize2fs $R > /run/resize2fs.log 2>&1 || log "mobian: resize2fs failed"
+	[ -x /mnt/root/lib/systemd/systemd ] || { log "mobian: no systemd on $R"; umount /mnt/root; return 1; }
+	if [ -e /mnt/root/var/lib/s10e/boot-attempt ]; then
+		log "mobian: the last boot never reached multi-user, staying here (rm /var/lib/s10e/boot-attempt to retry)"
+		umount /mnt/root; return 1
+	fi
+	grep -qw s10e.stay /proc/cmdline && { log "mobian: staying (s10e.stay)"; umount /mnt/root; return 1; }
+	mkdir -p /mnt/root/var/lib/s10e && date > /mnt/root/var/lib/s10e/boot-attempt && sync
+	log "switching to Mobian on $R"
+	# Every step logs through fd 9, opened before /dev moves away. ramoops
+	# keeps the trail if the switch dies.
+	exec 9>/dev/kmsg
+	k() { echo "s10e-init: switch: $*" >&9; }
+	kill $CONSOLE_LOOP 2>/dev/null; k "console loop stopped"
+	killall dropbear telnetd udhcpd 2>/dev/null; k "daemons stopped"
+	# The gadget stays up into Mobian: unbinding the UDC hangs here, and then
+	# mobile-usb-gadget cannot have the controller either (masked on the S10e;
+	# s10e-usb-net.service puts 172.16.42.1 on usb0 again). Only the shell on
+	# the ACM port goes, so nothing of the initramfs keeps running.
+	for p in /proc/[0-9]*; do
+		[ "${p#/proc/}" = 1 ] && continue
+		ls -l $p/fd 2>/dev/null | grep -q ttyGS0 && kill -9 ${p#/proc/} 2>/dev/null
+	done
+	k "gadget kept, ACM shell stopped"
+	# /dev last: after it moves, every 2>/dev/null redirect fails and busybox
+	# sh skips the command, which left /proc, /sys and /run behind.
+	for m in /proc /sys /run /dev; do
+		if mount --move $m /mnt/root$m; then k "moved $m"; else k "FAILED to move $m"; fi
+	done
+	# Debug hooks on the Mobian side, so no initramfs rebuild is needed:
+	# /etc/s10e/pid1 replaces systemd as PID 1, /etc/s10e/pid1-args adds
+	# arguments (e.g. --log-level=debug --log-target=kmsg).
+	P=/lib/systemd/systemd
+	[ -s /mnt/root/etc/s10e/pid1 ] && P=$(cat /mnt/root/etc/s10e/pid1)
+	[ -s /mnt/root/etc/s10e/pid1-args ] && A=$(cat /mnt/root/etc/s10e/pid1-args)
+	k "exec $P $A"
+	exec 9>&-
+	exec switch_root /mnt/root $P $A
+}
+mobian
+
+log "staying in the initramfs: ssh root@$IP"
+while true; do sleep 3600; done

@@ -1,0 +1,19 @@
+#!/bin/sh
+# s10e-tone on|off : codec tone generator -> HPOUT2 (3.5 mm jack), low level
+c="amixer -q -c0"
+case "$1" in
+on)
+	$c cset name='HPOUT2 Digital Volume' 80      # well below 0 dB (128 = 0 dB)
+	$c cset name='HPOUT2L Input 1' 'Tone Generator 1'
+	$c cset name='HPOUT2R Input 1' 'Tone Generator 1'
+	$c cset name='HPOUT2L Input 1 Volume' 12      # -20 dB
+	$c cset name='HPOUT2R Input 1 Volume' 12
+	$c cset name='HPOUT2 Digital Switch' on
+	$c cset name='Headphone Switch' on
+	;;
+off)
+	$c cset name='HPOUT2L Input 1' None
+	$c cset name='HPOUT2R Input 1' None
+	$c cset name='Headphone Switch' off
+	;;
+esac

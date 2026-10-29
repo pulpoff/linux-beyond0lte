@@ -1,0 +1,11 @@
+[Unit]
+Description=Set the S10e Bluetooth address from EFS
+After=bluetooth.service
+Wants=bluetooth.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/s10e-bt-addr
+
+[Install]
+WantedBy=multi-user.target

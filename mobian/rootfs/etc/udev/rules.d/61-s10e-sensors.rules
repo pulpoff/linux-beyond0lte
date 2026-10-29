@@ -1,0 +1,5 @@
+# S10e sensor hub (bcm4775-shub): the hub reports in Android's axis convention,
+# iio-sensor-proxy expects X and Y the other way round.
+SUBSYSTEM=="iio", ATTR{name}=="bcm4775-accel", ENV{ACCEL_MOUNT_MATRIX}="-1, 0, 0; 0, -1, 0; 0, 0, 1"
+# in_proximity_raw is the hub's own near (1) / far (0) decision
+SUBSYSTEM=="iio", ATTR{name}=="bcm4775-prox", ENV{PROXIMITY_NEAR_LEVEL}="1"

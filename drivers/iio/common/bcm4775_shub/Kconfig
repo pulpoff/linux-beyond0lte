@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-2.0-only
+config IIO_BCM4775_SHUB
+	tristate "Broadcom BCM4775 sensor hub (Samsung SSP)"
+	depends on SPI && OF
+	select FW_LOADER
+	select IIO_BUFFER
+	select IIO_TRIGGERED_BUFFER
+	help
+	  The BCM4775 GNSS/sensor hub in Samsung Galaxy S10 phones. It needs
+	  a RAM patch (brcm/bcm4775-shub.patch) on every power-up. The
+	  accelerometer, light, proximity and compass it runs are exposed
+	  as IIO devices.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called bcm4775-shub.

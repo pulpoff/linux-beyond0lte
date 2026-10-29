@@ -1,0 +1,9 @@
+#!/bin/sh
+# s6sy761 sometimes NAKs its first probe at boot (silent -ENXIO); bind it again.
+d=/sys/bus/i2c/devices/0-0048
+for i in 1 2 3 4 5 6 7 8 9 10; do
+	[ -e $d/driver ] && exit 0
+	echo 0-0048 > /sys/bus/i2c/drivers/s6sy761/bind 2>/dev/null
+	sleep 0.5
+done
+[ -e $d/driver ]

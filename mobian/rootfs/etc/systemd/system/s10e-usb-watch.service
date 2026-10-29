@@ -1,0 +1,10 @@
+[Unit]
+Description=S10e: re-plug the USB gadget in software when no host configured it
+After=s10e-usb-net.service
+
+[Service]
+ExecStart=/usr/local/sbin/s10e-usb-watch
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

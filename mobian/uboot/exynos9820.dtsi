@@ -1,0 +1,1861 @@
+// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
+/*
+ * Samsung Exynos 9820 SoC device tree source
+ *
+ * Copyright (c) 2025 chiffathefox <chiffathefoxx@gmail.com>
+ */
+
+#include <dt-bindings/clock/exynos9820.h>
+#include <dt-bindings/clock/samsung,exynos9820-acpm.h>
+#include <dt-bindings/interrupt-controller/arm-gic.h>
+#include <dt-bindings/interrupt-controller/exynos9820.h>
+
+/ {
+	compatible = "samsung,exynos9820";
+	#address-cells = <2>;
+	#size-cells = <1>;
+
+	interrupt-parent = <&gic>;
+
+	aliases {
+		pinctrl0 = &pinctrl_alive;
+		pinctrl1 = &pinctrl_aud;
+		pinctrl2 = &pinctrl_cmgp;
+		pinctrl3 = &pinctrl_fsys0;
+		pinctrl4 = &pinctrl_fsys1;
+		pinctrl5 = &pinctrl_peric0;
+		pinctrl6 = &pinctrl_peric1;
+		pinctrl7 = &pinctrl_vts;
+	};
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		cpu-map {
+			cluster0 {
+				core0 {
+					cpu = <&cpu0>;
+				};
+				core1 {
+					cpu = <&cpu1>;
+				};
+				core2 {
+					cpu = <&cpu2>;
+				};
+				core3 {
+					cpu = <&cpu3>;
+				};
+			};
+
+			cluster1 {
+				core0 {
+					cpu = <&cpu4>;
+				};
+				core1 {
+					cpu = <&cpu5>;
+				};
+			};
+
+			cluster2 {
+				core0 {
+					cpu = <&cpu6>;
+				};
+				core1 {
+					cpu = <&cpu7>;
+				};
+			};
+		};
+
+		cpu0: cpu@0 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a55";
+			reg = <0x0>;
+			clocks = <&acpm_ipc EXYNOS9820_CLK_ACPM_DVFS_CPUCL0>;
+			#cooling-cells = <2>;
+			enable-method = "psci";
+			cpu-idle-states = <&ananke_cpu_sleep>;
+			capacity-dmips-mhz = <272>;
+			dynamic-power-coefficient = <160>;
+			operating-points-v2 = <&cpucl0_opp_table>;
+		};
+
+		cpu1: cpu@1 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a55";
+			reg = <0x1>;
+			clocks = <&acpm_ipc EXYNOS9820_CLK_ACPM_DVFS_CPUCL0>;
+			#cooling-cells = <2>;
+			enable-method = "psci";
+			cpu-idle-states = <&ananke_cpu_sleep>;
+			capacity-dmips-mhz = <272>;
+			dynamic-power-coefficient = <160>;
+			operating-points-v2 = <&cpucl0_opp_table>;
+		};
+
+		cpu2: cpu@2 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a55";
+			reg = <0x2>;
+			clocks = <&acpm_ipc EXYNOS9820_CLK_ACPM_DVFS_CPUCL0>;
+			#cooling-cells = <2>;
+			enable-method = "psci";
+			cpu-idle-states = <&ananke_cpu_sleep>;
+			capacity-dmips-mhz = <272>;
+			dynamic-power-coefficient = <160>;
+			operating-points-v2 = <&cpucl0_opp_table>;
+		};
+
+		cpu3: cpu@3 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a55";
+			reg = <0x3>;
+			clocks = <&acpm_ipc EXYNOS9820_CLK_ACPM_DVFS_CPUCL0>;
+			#cooling-cells = <2>;
+			enable-method = "psci";
+			cpu-idle-states = <&ananke_cpu_sleep>;
+			capacity-dmips-mhz = <272>;
+			dynamic-power-coefficient = <160>;
+			operating-points-v2 = <&cpucl0_opp_table>;
+		};
+
+		cpu4: cpu@4 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a75";
+			reg = <0x4>;
+			clocks = <&acpm_ipc EXYNOS9820_CLK_ACPM_DVFS_CPUCL1>;
+			#cooling-cells = <2>;
+			enable-method = "psci";
+			cpu-idle-states = <&prometheus_cpu_sleep>;
+			capacity-dmips-mhz = <531>;
+			dynamic-power-coefficient = <320>;
+			operating-points-v2 = <&cpucl1_opp_table>;
+		};
+
+		cpu5: cpu@5 {
+			device_type = "cpu";
+			compatible = "arm,cortex-a75";
+			reg = <0x5>;
+			clocks = <&acpm_ipc EXYNOS9820_CLK_ACPM_DVFS_CPUCL1>;
+			#cooling-cells = <2>;
+			enable-method = "psci";
+			cpu-idle-states = <&prometheus_cpu_sleep>;
+			capacity-dmips-mhz = <531>;
+			dynamic-power-coefficient = <320>;
+			operating-points-v2 = <&cpucl1_opp_table>;
+		};
+
+		cpu6: cpu@100 {
+			device_type = "cpu";
+			compatible = "samsung,mongoose-m4";
+			reg = <0x100>;
+			clocks = <&acpm_ipc EXYNOS9820_CLK_ACPM_DVFS_CPUCL2>;
+			#cooling-cells = <2>;
+			enable-method = "psci";
+			cpu-idle-states = <&cheetah_cpu_sleep>;
+			capacity-dmips-mhz = <785>;
+			dynamic-power-coefficient = <760>;
+			operating-points-v2 = <&cpucl2_opp_table>;
+		};
+
+		cpu7: cpu@101 {
+			device_type = "cpu";
+			compatible = "samsung,mongoose-m4";
+			reg = <0x101>;
+			clocks = <&acpm_ipc EXYNOS9820_CLK_ACPM_DVFS_CPUCL2>;
+			#cooling-cells = <2>;
+			enable-method = "psci";
+			cpu-idle-states = <&cheetah_cpu_sleep>;
+			capacity-dmips-mhz = <785>;
+			dynamic-power-coefficient = <760>;
+			operating-points-v2 = <&cpucl2_opp_table>;
+		};
+
+		idle-states {
+			entry-method = "psci";
+
+			ananke_cpu_sleep: cpu-ananke-sleep {
+				idle-state-name = "c2";
+				compatible = "arm,idle-state";
+				arm,psci-suspend-param = <0x0010000>;
+				local-timer-stop;
+				entry-latency-us = <70>;
+				exit-latency-us = <160>;
+				min-residency-us = <2000>;
+				status = "disabled";
+			};
+
+			prometheus_cpu_sleep: cpu-prometheus-sleep {
+				idle-state-name = "c2";
+				compatible = "arm,idle-state";
+				arm,psci-suspend-param = <0x0010000>;
+				local-timer-stop;
+				entry-latency-us = <150>;
+				exit-latency-us = <190>;
+				min-residency-us = <2500>;
+				status = "disabled";
+			};
+
+			cheetah_cpu_sleep: cpu-cheetah-sleep {
+				idle-state-name = "c2";
+				compatible = "arm,idle-state";
+				arm,psci-suspend-param = <0x0010000>;
+				local-timer-stop;
+				entry-latency-us = <235>;
+				exit-latency-us = <220>;
+				min-residency-us = <3500>;
+				status = "disabled";
+			};
+		};
+	};
+
+	cpucl0_opp_table: opp-table-0 {
+		compatible = "operating-points-v2";
+		opp-shared;
+
+		opp-442000000 {
+			opp-hz = /bits/ 64 <442000000>;
+			opp-microvolt = <581250>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-546000000 {
+			opp-hz = /bits/ 64 <546000000>;
+			opp-microvolt = <612500>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-650000000 {
+			opp-hz = /bits/ 64 <650000000>;
+			opp-microvolt = <631250>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-806000000 {
+			opp-hz = /bits/ 64 <806000000>;
+			opp-microvolt = <675000>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-949000000 {
+			opp-hz = /bits/ 64 <949000000>;
+			opp-microvolt = <712500>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-1053000000 {
+			opp-hz = /bits/ 64 <1053000000>;
+			opp-microvolt = <743750>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-1157000000 {
+			opp-hz = /bits/ 64 <1157000000>;
+			opp-microvolt = <775000>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-1300000000 {
+			opp-hz = /bits/ 64 <1300000000>;
+			opp-microvolt = <818750>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-1456000000 {
+			opp-hz = /bits/ 64 <1456000000>;
+			opp-microvolt = <868750>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-1586000000 {
+			opp-hz = /bits/ 64 <1586000000>;
+			opp-microvolt = <918750>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-1742000000 {
+			opp-hz = /bits/ 64 <1742000000>;
+			opp-microvolt = <1000000>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-1846000000 {
+			opp-hz = /bits/ 64 <1846000000>;
+			opp-microvolt = <1050000>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-1950000000 {
+			opp-hz = /bits/ 64 <1950000000>;
+			opp-microvolt = <1093750>;
+			clock-latency-ns = <500000>;
+		};
+	};
+
+	cpucl1_opp_table: opp-table-1 {
+		compatible = "operating-points-v2";
+		opp-shared;
+
+		opp-507000000 {
+			opp-hz = /bits/ 64 <507000000>;
+			opp-microvolt = <587500>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-650000000 {
+			opp-hz = /bits/ 64 <650000000>;
+			opp-microvolt = <606250>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-754000000 {
+			opp-hz = /bits/ 64 <754000000>;
+			opp-microvolt = <631250>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-845000000 {
+			opp-hz = /bits/ 64 <845000000>;
+			opp-microvolt = <650000>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-962000000 {
+			opp-hz = /bits/ 64 <962000000>;
+			opp-microvolt = <662500>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-1066000000 {
+			opp-hz = /bits/ 64 <1066000000>;
+			opp-microvolt = <681250>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-1222000000 {
+			opp-hz = /bits/ 64 <1222000000>;
+			opp-microvolt = <725000>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-1404000000 {
+			opp-hz = /bits/ 64 <1404000000>;
+			opp-microvolt = <756250>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-1508000000 {
+			opp-hz = /bits/ 64 <1508000000>;
+			opp-microvolt = <781250>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-1586000000 {
+			opp-hz = /bits/ 64 <1586000000>;
+			opp-microvolt = <793750>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-1690000000 {
+			opp-hz = /bits/ 64 <1690000000>;
+			opp-microvolt = <818750>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-1794000000 {
+			opp-hz = /bits/ 64 <1794000000>;
+			opp-microvolt = <850000>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-1898000000 {
+			opp-hz = /bits/ 64 <1898000000>;
+			opp-microvolt = <893750>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-2002000000 {
+			opp-hz = /bits/ 64 <2002000000>;
+			opp-microvolt = <918750>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-2106000000 {
+			opp-hz = /bits/ 64 <2106000000>;
+			opp-microvolt = <956250>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-2210000000 {
+			opp-hz = /bits/ 64 <2210000000>;
+			opp-microvolt = <1006250>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-2314000000 {
+			opp-hz = /bits/ 64 <2314000000>;
+			opp-microvolt = <1056250>;
+			clock-latency-ns = <500000>;
+		};
+	};
+
+	cpucl2_opp_table: opp-table-2 {
+		compatible = "operating-points-v2";
+		opp-shared;
+
+		opp-520000000 {
+			opp-hz = /bits/ 64 <520000000>;
+			opp-microvolt = <587500>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-624000000 {
+			opp-hz = /bits/ 64 <624000000>;
+			opp-microvolt = <600000>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-728000000 {
+			opp-hz = /bits/ 64 <728000000>;
+			opp-microvolt = <606250>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-819000000 {
+			opp-hz = /bits/ 64 <819000000>;
+			opp-microvolt = <618750>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-936000000 {
+			opp-hz = /bits/ 64 <936000000>;
+			opp-microvolt = <637500>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-1040000000 {
+			opp-hz = /bits/ 64 <1040000000>;
+			opp-microvolt = <643750>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-1144000000 {
+			opp-hz = /bits/ 64 <1144000000>;
+			opp-microvolt = <675000>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-1248000000 {
+			opp-hz = /bits/ 64 <1248000000>;
+			opp-microvolt = <687500>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-1378000000 {
+			opp-hz = /bits/ 64 <1378000000>;
+			opp-microvolt = <706250>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-1456000000 {
+			opp-hz = /bits/ 64 <1456000000>;
+			opp-microvolt = <718750>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-1560000000 {
+			opp-hz = /bits/ 64 <1560000000>;
+			opp-microvolt = <743750>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-1664000000 {
+			opp-hz = /bits/ 64 <1664000000>;
+			opp-microvolt = <768750>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-1820000000 {
+			opp-hz = /bits/ 64 <1820000000>;
+			opp-microvolt = <793750>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-1976000000 {
+			opp-hz = /bits/ 64 <1976000000>;
+			opp-microvolt = <837500>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-2080000000 {
+			opp-hz = /bits/ 64 <2080000000>;
+			opp-microvolt = <868750>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-2236000000 {
+			opp-hz = /bits/ 64 <2236000000>;
+			opp-microvolt = <906250>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-2340000000 {
+			opp-hz = /bits/ 64 <2340000000>;
+			opp-microvolt = <931250>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-2470000000 {
+			opp-hz = /bits/ 64 <2470000000>;
+			opp-microvolt = <987500>;
+			clock-latency-ns = <500000>;
+		};
+
+		opp-2530000000 {
+			opp-hz = /bits/ 64 <2530000000>;
+			opp-microvolt = <1018750>;
+			clock-latency-ns = <500000>;
+		};
+
+		/*
+		 * Mongoose cores can go all the way to 2.73GHz,
+		 * but trying to run all 8 cores at max frequency trips hw
+		 * thermal/overcurrent protection faster than the TMU can react
+		 */
+	};
+
+	firmware {
+		acpm_ipc: power-management {
+			compatible = "samsung,exynos9820-acpm-ipc";
+			#clock-cells = <1>;
+
+			/* Provide boot defaults since FREQ_GET is broken */
+			assigned-clocks = <&acpm_ipc EXYNOS9820_CLK_ACPM_DVFS_MIF>,
+					  <&acpm_ipc EXYNOS9820_CLK_ACPM_DVFS_INT>,
+					  <&acpm_ipc EXYNOS9820_CLK_ACPM_DVFS_CPUCL0>,
+					  <&acpm_ipc EXYNOS9820_CLK_ACPM_DVFS_CPUCL1>,
+					  <&acpm_ipc EXYNOS9820_CLK_ACPM_DVFS_CPUCL2>,
+					  <&acpm_ipc EXYNOS9820_CLK_ACPM_DVFS_NPU>,
+					  <&acpm_ipc EXYNOS9820_CLK_ACPM_DVFS_DISP>,
+					  <&acpm_ipc EXYNOS9820_CLK_ACPM_DVFS_SCORE>,
+					  <&acpm_ipc EXYNOS9820_CLK_ACPM_DVFS_AUD>,
+					  <&acpm_ipc EXYNOS9820_CLK_ACPM_DVS_CP>,
+					  <&acpm_ipc EXYNOS9820_CLK_ACPM_DVFS_G3D>,
+					  <&acpm_ipc EXYNOS9820_CLK_ACPM_DVFS_INTCAM>,
+					  <&acpm_ipc EXYNOS9820_CLK_ACPM_DVFS_CAM>,
+					  <&acpm_ipc EXYNOS9820_CLK_ACPM_DVFS_IVA>,
+					  <&acpm_ipc EXYNOS9820_CLK_ACPM_DVFS_MFC>;
+			assigned-clock-rates = <2093000000>,
+					       <534000000>,
+					       <1053000000>,
+					       <1222000000>,
+					       <1378000000>,
+					       <167000000>,
+					       <534000000>,
+					       <25000000>,
+					       <295000000>,
+					       <1066000000>,
+					       <156000000>,
+					       <630000000>,
+					       <650000000>,
+					       <56000000>,
+					       <134000000>;
+
+			mboxes = <&ap2apm_mailbox>;
+			shmem = <&apm_sram>;
+		};
+	};
+
+	oscclk: osc-clock {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-output-names = "oscclk";
+	};
+
+	/* TODO: A55 PMU */
+	/* TODO: A75 PMU */
+	/* TODO: Mongoose M4 PMU */
+
+	pmu-a55 {
+		compatible = "arm,cortex-a55-pmu";
+		interrupts = <GIC_SPI 141 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 142 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 143 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 144 IRQ_TYPE_LEVEL_HIGH>;
+
+		interrupt-affinity = <&cpu0>,
+				     <&cpu1>,
+				     <&cpu2>,
+				     <&cpu3>;
+	};
+
+	pmu-a75 {
+		compatible = "arm,cortex-a75-pmu";
+		interrupts = <GIC_SPI 145 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 146 IRQ_TYPE_LEVEL_HIGH>;
+
+		interrupt-affinity = <&cpu4>,
+				     <&cpu5>;
+	};
+
+	pmu-mongoose-m4 {
+		compatible = "samsung,mongoose-pmu";
+		interrupts = <GIC_SPI 174 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 175 IRQ_TYPE_LEVEL_HIGH>;
+
+		interrupt-affinity = <&cpu6>,
+				     <&cpu7>;
+	};
+
+	psci {
+		/* PSCI advertises 0.2+ but AFFINITY_INFO is broken */
+		compatible = "arm,psci";
+		method = "smc";
+		cpu_suspend = <0xc4000001>;
+		cpu_off = <0x84000002>;
+		cpu_on = <0xc4000003>;
+	};
+
+	/*
+	 * Stock gpu_dvfs_table. ACPM sets the G3D voltage itself for each
+	 * rate (EXYNOS9820_CLK_ACPM_DVFS_G3D), so no opp-microvolt.
+	 */
+	gpu_opp_table: opp-table-gpu {
+		compatible = "operating-points-v2";
+
+		opp-156000000 {
+			opp-hz = /bits/ 64 <156000000>;
+		};
+		opp-200000000 {
+			opp-hz = /bits/ 64 <200000000>;
+		};
+		opp-260000000 {
+			opp-hz = /bits/ 64 <260000000>;
+		};
+		opp-325000000 {
+			opp-hz = /bits/ 64 <325000000>;
+		};
+		opp-377000000 {
+			opp-hz = /bits/ 64 <377000000>;
+		};
+		opp-433000000 {
+			opp-hz = /bits/ 64 <433000000>;
+		};
+		opp-572000000 {
+			opp-hz = /bits/ 64 <572000000>;
+		};
+		opp-650000000 {
+			opp-hz = /bits/ 64 <650000000>;
+		};
+		opp-702000000 {
+			opp-hz = /bits/ 64 <702000000>;
+		};
+	};
+
+	soc: soc@0 {
+		compatible = "simple-bus";
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges = <0x0 0x0 0x0 0x20000000>;
+
+		flexpmu_dbg: flexpmu-dbg@204bc00 {
+			compatible = "samsung,exynos9820-flexpmu-dbg";
+			reg = <0x0204bc00 0x400>,
+			      <0x15950000 0x100>;
+			reg-names = "data", "rtc";
+		};
+
+#if 0
+		chipid@10000000 {
+			compatible = "samsung,exynos9810-chipid",
+				     "samsung,exynos850-chipid";
+			reg = <0x10000000 0x100>;
+		};
+#endif
+		cmu_peris: clock-controller@10020000 {
+			compatible = "samsung,exynos9820-cmu-peris";
+			reg = <0x10020000 0x10000>;
+			#clock-cells = <1>;
+
+			clock-names = "oscclk",
+				      "bus";
+			clocks = <&oscclk>,
+				 <&cmu_top CLK_DOUT_CMU_PERIS_BUS>;
+			samsung,sysreg = <&sysreg_peris>;
+		};
+
+		sysreg_peris: syscon@10030000 {
+			compatible = "samsung,exynos9820-peris-sysreg", "syscon";
+			reg = <0x10030000 0x10000>;
+			clocks = <&cmu_peris CLK_GOUT_PERIS_SYSREG_PERIS_PCLK>;
+		};
+
+		timer@10040000 {
+			compatible = "samsung,exynos4210-mct";
+			reg = <0x10040000 0x800>;
+			clocks = <&oscclk>,
+				 <&cmu_peris CLK_GOUT_PERIS_MCT_PCLK>;
+			clock-names = "fin_pll",
+				      "mct";
+			interrupts = <GIC_SPI 466 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 467 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 468 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 469 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 470 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 471 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 472 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 473 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 474 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 475 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 476 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 477 IRQ_TYPE_LEVEL_HIGH>;
+		};
+
+		tmu_top: thermal-sensor@10090000 {
+			compatible = "samsung,exynos9820-tmu-top";
+			reg = <0x10090000 0x800>;
+			clocks = <&cmu_peris CLK_GOUT_PERIS_TMU_TOP_PCLK>,
+				 <&cmu_peris CLK_GOUT_PERIS_TMU_SUB_PCLK>;
+			interrupts = <GIC_SPI 478 IRQ_TYPE_LEVEL_HIGH>;
+			samsung,acpm-ipc = <&acpm_ipc>;
+			#thermal-sensor-cells = <1>;
+		};
+
+		gic: interrupt-controller@10100000 {
+			compatible = "arm,cortex-a15-gic", "arm,cortex-a9-gic";
+
+			#interrupt-cells = <3>;
+			#address-cells = <0>;
+
+			interrupt-controller;
+			reg = <0x10101000 0x1000>,
+			      <0x10102000 0x1000>,
+			      <0x10104000 0x2000>,
+			      <0x10106000 0x2000>;
+			interrupts = <GIC_PPI 9 (GIC_CPU_MASK_SIMPLE(4) |
+						 IRQ_TYPE_LEVEL_HIGH)>;
+		};
+
+		cmu_peric0: clock-controller@10400000 {
+			compatible = "samsung,exynos9820-cmu-peric0";
+			reg = <0x10400000 0x10000>;
+			#clock-cells = <1>;
+
+			clock-names = "oscclk",
+				      "bus",
+				      "ip";
+			clocks = <&oscclk>,
+				 <&cmu_top CLK_DOUT_CMU_PERIC0_BUS>,
+				 <&cmu_top CLK_DOUT_CMU_PERIC0_IP>;
+			samsung,sysreg = <&sysreg_peric0>;
+		};
+
+		sysreg_peric0: syscon@10420000 {
+			compatible = "samsung,exynos9820-peric0-sysreg", "syscon";
+			reg = <0x10420000 0x10000>;
+			clocks = <&cmu_peric0 CLK_GOUT_PERIC0_SYSREG_PERIC0_PCLK>;
+		};
+
+		pinctrl_peric0: pinctrl@10430000 {
+			compatible = "samsung,exynos9820-pinctrl";
+			reg = <0x10430000 0x1000>;
+			clocks = <&cmu_peric0 CLK_GOUT_PERIC0_GPIO_PERIC0_PCLK>;
+			clock-names = "pclk";
+			interrupts = <GIC_SPI 380 IRQ_TYPE_LEVEL_HIGH>;
+		};
+
+		serial0: serial@10440000 {
+			compatible = "samsung,exynos7870-uart",
+				     "samsung,exynos8895-uart";
+			reg = <0x10440000 0x100>;
+			interrupts = <GIC_SPI 381 IRQ_TYPE_LEVEL_HIGH>;
+
+#if 0
+			pinctrl-names = "default";
+			pinctrl-0 = <&uart0_bus>;
+#endif
+
+			clock-names = "uart",
+				      "clk_uart_baud0";
+			clocks = <&cmu_peric0 CLK_GOUT_PERIC0_UART_DBG_PCLK>,
+				 <&cmu_peric0 CLK_GOUT_PERIC0_UART_DBG_IPCLK>;
+
+			samsung,uart-fifosize = <256>;
+
+			status = "disabled";
+		};
+
+		usi1: usi@104700c0 {
+			compatible = "samsung,exynos850-usi";
+			reg = <0x104700c0 0x20>;
+			ranges;
+
+			clock-names = "pclk",
+				      "ipclk";
+			clocks = <&cmu_peric0 CLK_GOUT_PERIC0_USI01_USI_PCLK>,
+				 <&cmu_peric0 CLK_GOUT_PERIC0_USI01_USI_IPCLK>;
+
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			samsung,sysreg = <&sysreg_peric0 0x100c>;
+			status = "disabled";
+
+			spi2: spi@10470000 {
+				compatible = "samsung,exynos850-spi";
+				reg = <0x10470000 0x30>;
+				interrupts = <GIC_SPI 384 IRQ_TYPE_LEVEL_HIGH>;
+
+				clock-names = "spi",
+					      "spi_busclk0";
+				clocks = <&cmu_peric0 CLK_GOUT_PERIC0_USI01_USI_PCLK>,
+					 <&cmu_peric0 CLK_GOUT_PERIC0_USI01_USI_IPCLK>;
+
+				num-cs = <1>;
+				samsung,spi-src-clk = <0>;
+
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				status = "disabled";
+			};
+		};
+
+		usi3: usi@104b00c0 {
+			compatible = "samsung,exynos850-usi";
+			reg = <0x104b00c0 0x20>;
+			ranges;
+
+			clock-names = "pclk",
+				      "ipclk";
+			clocks = <&cmu_peric0 CLK_GOUT_PERIC0_USI03_USI_PCLK>,
+				 <&cmu_peric0 CLK_GOUT_PERIC0_USI03_USI_IPCLK>;
+
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			samsung,sysreg = <&sysreg_peric0 0x101C>;
+			status = "disabled";
+
+			hsi2c10: i2c@104b0000 {
+				compatible = "samsung,exynosautov9-hsi2c";
+				reg = <0x104b0000 0xc0>;
+
+				clock-names = "hsi2c",
+					      "hsi2c_pclk";
+				clocks = <&cmu_peric0 CLK_GOUT_PERIC0_USI03_USI_IPCLK>,
+					 <&cmu_peric0 CLK_GOUT_PERIC0_USI03_USI_PCLK>;
+
+				interrupts = <GIC_SPI 388 IRQ_TYPE_LEVEL_HIGH>;
+				pinctrl-0 = <&hsi2c10_bus>;
+				pinctrl-names = "default";
+
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				status = "disabled";
+			};
+		};
+
+		pwm: pwm@10510000 {
+			compatible = "samsung,exynos4210-pwm";
+			reg = <0x10510000 0x1000>;
+			samsung,pwm-outputs = <0>, <1>, <2>, <3>, <4>;
+			#pwm-cells = <3>;
+			clocks = <&oscclk>;
+			clock-names = "timers";
+			status = "disabled";
+		};
+
+		cmu_peric1: clock-controller@10800000 {
+			compatible = "samsung,exynos9820-cmu-peric1";
+			reg = <0x10800000 0x10000>;
+			#clock-cells = <1>;
+
+			clock-names = "oscclk",
+				      "bus";
+			clocks = <&oscclk>,
+				 <&cmu_top CLK_DOUT_CMU_PERIC1_BUS>;
+			samsung,sysreg = <&sysreg_peric1>;
+		};
+
+		sysreg_peric1: syscon@10820000 {
+			compatible = "samsung,exynos9820-peric1-sysreg", "syscon";
+			reg = <0x10820000 0x10000>;
+			/* Clock omitted to keep the clock driver simple */
+		};
+
+		pinctrl_peric1: pinctrl@10830000 {
+			compatible = "samsung,exynos9820-pinctrl";
+			reg = <0x10830000 0x1000>;
+			interrupts = <GIC_SPI 407 IRQ_TYPE_LEVEL_HIGH>;
+		};
+
+		usi_uart_bt: usi@108400c0 {
+			compatible = "samsung,exynos850-usi";
+			reg = <0x108400c0 0x20>;
+			ranges;
+
+			clock-names = "pclk",
+				      "ipclk";
+			clocks = <&cmu_peric1 CLK_GOUT_PERIC1_UART_BT_PCLK>,
+				 <&cmu_peric1 CLK_GOUT_PERIC1_UART_BT_IPCLK>;
+
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			samsung,sysreg = <&sysreg_peric1 0x1000>;
+			status = "disabled";
+
+			serial1: serial@10840000 {
+				compatible = "samsung,exynos7870-uart",
+					     "samsung,exynos8895-uart";
+				reg = <0x10840000 0xc0>;
+				interrupts = <GIC_SPI 408 IRQ_TYPE_LEVEL_HIGH>;
+
+				clock-names = "uart",
+					      "clk_uart_baud0";
+				clocks = <&cmu_peric1 CLK_GOUT_PERIC1_UART_BT_PCLK>,
+					 <&cmu_peric1 CLK_GOUT_PERIC1_UART_BT_IPCLK>;
+
+				samsung,uart-fifosize = <256>;
+
+				status = "disabled";
+			};
+		};
+		usi16: usi@109700c0 {
+			compatible = "samsung,exynos850-usi";
+			reg = <0x109700c0 0x20>;
+			ranges;
+
+			clock-names = "pclk",
+				      "ipclk";
+			clocks = <&cmu_peric1 CLK_GOUT_PERIC1_USI16_USI_PCLK>,
+				 <&cmu_peric1 CLK_GOUT_PERIC1_USI16_USI_IPCLK>;
+
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			samsung,sysreg = <&sysreg_peric1 0x1048>;
+			status = "disabled";
+
+			spi17: spi@10970000 {
+				compatible = "samsung,exynos850-spi";
+				reg = <0x10970000 0x30>;
+				interrupts = <GIC_SPI 426 IRQ_TYPE_LEVEL_HIGH>;
+
+				clock-names = "spi",
+					      "spi_busclk0";
+				clocks = <&cmu_peric1 CLK_GOUT_PERIC1_USI16_USI_PCLK>,
+					 <&cmu_peric1 CLK_GOUT_PERIC1_USI16_USI_IPCLK>;
+
+				num-cs = <1>;
+				samsung,spi-src-clk = <0>;
+
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				status = "disabled";
+			};
+		};
+
+		usi17_i2c: usi@109a00c0 {
+			compatible = "samsung,exynos850-usi";
+			reg = <0x109a00c0 0x20>;
+			ranges;
+
+			clock-names = "pclk",
+				      "ipclk";
+			clocks = <&cmu_peric1 CLK_GOUT_PERIC1_USI17_I2C_PCLK>,
+				 <&cmu_peric1 CLK_GOUT_PERIC1_USI17_I2C_IPCLK>;
+
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			samsung,sysreg = <&sysreg_peric1 0x1050>;
+			status = "disabled";
+
+			hsi2c_38: i2c@109a0000 {
+				compatible = "samsung,exynosautov9-hsi2c";
+				reg = <0x109a0000 0xc0>;
+				interrupts = <GIC_SPI 428 IRQ_TYPE_LEVEL_HIGH>;
+
+				clock-names = "hsi2c",
+					      "hsi2c_pclk";
+				clocks = <&cmu_peric1 CLK_GOUT_PERIC1_USI17_I2C_IPCLK>,
+					 <&cmu_peric1 CLK_GOUT_PERIC1_USI17_I2C_PCLK>;
+
+				#address-cells = <1>;
+				#size-cells = <0>;
+				status = "disabled";
+			};
+		};
+
+		cmu_fsys0a: clock-controller@10a00000 {
+			compatible = "samsung,exynos9820-cmu-fsys0a";
+			reg = <0x10a00000 0x10000>;
+			#clock-cells = <1>;
+
+			clock-names = "oscclk",
+				      "usb31drd",
+				      "usbdp_debug";
+			clocks = <&oscclk>,
+				 <&cmu_top CLK_DOUT_CMU_FSYS0A_BUS>,
+				 <&cmu_top CLK_DOUT_CMU_FSYS0A_USBDP_DEBUG>;
+		};
+
+		/*
+		 * USB 2.0 PHY + USB/DP gen2 combo PHY (downstream: phy_version
+		 * 0x301, sub_phy_version 0x400): link/ctrl, PCS, PMA.
+		 */
+		usbdrd_phy: phy@10b00000 {
+			compatible = "samsung,exynos9820-usbdrd-phy";
+			reg = <0x10b00000 0x200>,
+			      <0x10af0000 0x800>,
+			      <0x10ae0000 0x2800>;
+			reg-names = "phy", "pcs", "pma";
+			#phy-cells = <1>;
+
+			clock-names = "phy",
+				      "ref",
+				      "scl_pclk",
+				      "pcs_pclk",
+				      "pma_ref";
+			clocks = <&cmu_fsys0a CLK_GOUT_FSYS0A_USB31DRD_ACLK_PHYCTRL>,
+				 <&oscclk>,
+				 <&cmu_fsys0a CLK_GOUT_FSYS0A_USB31DRD_I_USBDPPHY_SCL_APB_PCLK>,
+				 <&cmu_fsys0a CLK_GOUT_FSYS0A_USB31DRD_I_USBPCS_APB_CLK>,
+				 <&cmu_fsys0a CLK_GOUT_FSYS0A_USB31DRD_I_USBDPPHY_REF_SOC_PLL>;
+
+			samsung,pmu-syscon = <&pmu_system_controller>;
+
+			status = "disabled";
+		};
+
+		usbdrd: usb@10c00000 {
+			compatible = "samsung,exynos850-dwusb3";
+			ranges = <0x0 0x10c00000 0x10000>;
+
+			clock-names = "bus_early",
+				      "ref";
+			clocks = <&cmu_fsys0a CLK_GOUT_FSYS0A_USB31DRD_BUS_CLK_EARLY>,
+				 <&cmu_fsys0a CLK_GOUT_FSYS0A_USB31DRD_I_USB31DRD_REF_CLK_40>;
+
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			status = "disabled";
+
+			usbdrd_dwc3: usb@0 {
+				compatible = "snps,dwc3";
+				reg = <0x0 0x10000>;
+				interrupts = <GIC_SPI 241 IRQ_TYPE_LEVEL_HIGH>;
+				phys = <&usbdrd_phy 0>, <&usbdrd_phy 1>;
+				phy-names = "usb2-phy", "usb3-phy";
+				/*
+				 * Downstream sets "super-speed-plus" but its
+				 * dwc3 core forces LLUCTL.FORCE_GEN1 on this
+				 * DWC_usb31; mainline does the same for host
+				 * mode only with "super-speed".
+				 */
+				maximum-speed = "super-speed";
+				/*
+				 * The combo PHY's LC PLL does not lock while the
+				 * link holds the PIPE in P3; downstream clears
+				 * SUSPHY before every PHY init ("DP altmode
+				 * issue") and re-inits per attach.
+				 */
+				snps,dis_u3_susphy_quirk;
+				/*
+				 * Downstream GUSB3PIPECTL bits for this PHY
+				 * (beyond0 dwc3 node, "defined in MK"): the PCS
+				 * elastic buffer is set up nominal empty
+				 * (skp_remove_th = 1, no init buffering), so
+				 * the link must say so on the PIPE, plus Ux
+				 * exit in Px and U1/U2 exit fail -> Recovery.
+				 * Downstream also sets DISRXDETINP3 (Rx.Detect
+				 * in P2): its "revision >= 2.50a" test is true
+				 * for every DWC_usb31.
+				 */
+				snps,dis_rxdet_inp3_quirk;
+				snps,elastic-buf-mode-quirk;
+				snps,ux-exit-in-px-quirk;
+				snps,u1u2-exitfail-quirk;
+			};
+		};
+
+		cmu_fsys0: clock-controller@13000000 {
+			compatible = "samsung,exynos9820-cmu-fsys0";
+			reg = <0x13000000 0x10000>;
+			#clock-cells = <1>;
+
+			clock-names = "oscclk",
+				      "bus";
+			clocks = <&oscclk>,
+				 <&cmu_top CLK_DOUT_CMU_FSYS0_BUS>;
+			samsung,sysreg = <&sysreg_fsys0>;
+		};
+
+		sysreg_fsys0: syscon@13020000 {
+			compatible = "samsung,exynos9820-fsys0-sysreg", "syscon";
+			reg = <0x13020000 0x10000>;
+			/* Clock omitted to keep the clock driver simple */
+		};
+
+		pinctrl_fsys0: pinctrl@13030000 {
+			compatible = "samsung,exynos9820-pinctrl";
+			reg = <0x13030000 0x1000>;
+			interrupts = <GIC_SPI 240 IRQ_TYPE_LEVEL_HIGH>;
+		};
+
+		cmu_fsys1: clock-controller@13c00000 {
+			compatible = "samsung,exynos9820-cmu-fsys1";
+			reg = <0x13c00000 0x10000>;
+			#clock-cells = <1>;
+
+			clock-names = "oscclk",
+				      "bus",
+				      "mmc_card",
+				      "pcie",
+				      "ufs_card",
+				      "ufs_embd";
+			clocks = <&oscclk>,
+				 <&cmu_top CLK_GOUT_CMU_FSYS1_BUS>,
+				 <&cmu_top CLK_GOUT_CMU_FSYS1_MMC_CARD>,
+				 <&cmu_top CLK_GOUT_CMU_FSYS1_PCIE>,
+				 <&cmu_top CLK_GOUT_CMU_FSYS1_UFS_CARD>,
+				 <&cmu_top CLK_GOUT_CMU_FSYS1_UFS_EMBD>;
+			samsung,sysreg = <&sysreg_fsys1>;
+		};
+
+		sysreg_fsys1: syscon@13c10000 {
+			compatible = "samsung,exynos9820-fsys1-sysreg", "syscon";
+			reg = <0x13c10000 0x1200>;
+			clocks = <&cmu_fsys1 CLK_GOUT_FSYS1_SYSREG_FSYS1_PCLK>;
+		};
+
+		/* GEN2 root complex for the Wi-Fi (downstream pcie_0) */
+		pcie_wifi: pcie@13f00000 {
+			compatible = "samsung,exynos9820-pcie";
+			reg = <0x13f00000 0x1000>,
+			      <0x13ed0000 0x1000>,
+			      <0x13ef0000 0x1000>,
+			      <0x13ee0000 0x200>,
+			      <0x14ffe000 0x2000>;
+			reg-names = "dbi", "elbi", "phy", "pcs", "config";
+			#address-cells = <3>;
+			#size-cells = <2>;
+			device_type = "pci";
+			ranges = <0x82000000 0 0x14000000 0x14000000 0 0x00ff0000>;
+			bus-range = <0x00 0xff>;
+			num-lanes = <1>;
+			max-link-speed = <1>;
+			interrupts = <GIC_SPI 253 IRQ_TYPE_LEVEL_HIGH>;
+			#interrupt-cells = <1>;
+			interrupt-map-mask = <0 0 0 0>;
+			interrupt-map = <0 0 0 0 &gic GIC_SPI 253 IRQ_TYPE_LEVEL_HIGH>;
+			samsung,pmu-syscon = <&pmu_system_controller>;
+			samsung,sysreg = <&sysreg_fsys1>;
+			status = "disabled";
+		};
+
+		pinctrl_fsys1: pinctrl@13c40000 {
+			compatible = "samsung,exynos9820-pinctrl";
+			reg = <0x13c40000 0x1000>;
+			clocks = <&cmu_fsys1 CLK_GOUT_FSYS1_GPIO_FSYS1_PCLK>;
+			clock-names = "pclk";
+			interrupts = <GIC_SPI 251 IRQ_TYPE_LEVEL_HIGH>;
+		};
+
+		ufs: ufs@13d60000 {
+			compatible = "samsung,exynos9820-ufs";
+			reg = <0x13d60000 0x200>,	/* 0: HCI standard */
+			      <0x13d61100 0x200>,	/* 1: Vendor specificed */
+			      <0x13d50000 0x8000>,	/* 2: UNIPRO */
+			      <0x13d70000 0x100>;	/* 3: UFS protector */
+			reg-names = "hci", "vs_hci", "unipro", "ufsp";
+
+			interrupts = <GIC_SPI 249 IRQ_TYPE_LEVEL_HIGH>;
+			clock-names = "core_clk",
+				      "sclk_unipro_main",
+				      "fmp";
+			clocks = <&cmu_fsys1 CLK_GOUT_FSYS1_UFS_EMBD_I_ACLK>,
+				 <&cmu_fsys1 CLK_GOUT_FSYS1_UFS_EMBD_I_CLK_UNIPRO>,
+				 <&cmu_fsys1 CLK_GOUT_FSYS1_UFS_EMBD_I_FMP_CLK>;
+			freq-table-hz = <0 0>,
+					<0 0>,
+					<0 0>;
+
+#if 0
+			pinctrl-names = "default";
+			pinctrl-0 = <&ufs_rst_n &ufs_refclk_out>;
+#endif
+
+			phys = <&ufs_phy>;
+			phy-names = "ufs-phy";
+
+			dma-coherent;
+			samsung,sysreg = <&sysreg_fsys1 0x700>;
+
+			status = "disabled";
+		};
+
+		ufs_phy: ufs-phy@13d64000 {
+			compatible = "samsung,exynos9820-ufs-phy";
+			reg = <0x13d64000 0x800>;
+			reg-names = "phy-pma";
+			#phy-cells = <0>;
+			samsung,pmu-syscon = <&pmu_system_controller>;
+		};
+
+		pinctrl_vts: pinctrl@15580000 {
+			compatible = "samsung,exynos9820-pinctrl";
+			reg = <0x15580000 0x1000>;
+		};
+
+		cmu_apm: clock-controller@15800000 {
+			compatible = "samsung,exynos9820-cmu-apm";
+			reg = <0x15800000 0x10000>;
+			#clock-cells = <1>;
+
+			clock-names = "oscclk",
+				      "bus";
+			clocks = <&oscclk>,
+				 <&cmu_top CLK_DOUT_CMU_APM_BUS>;
+			samsung,sysreg = <&sysreg_apm>;
+		};
+
+		sysreg_apm: syscon@15820000 {
+			compatible = "samsung,exynos9820-apm-sysreg", "syscon";
+			reg = <0x15820000 0x10000>;
+			clocks = <&cmu_apm CLK_GOUT_APM_SYSREG_APM_PCLK>;
+		};
+
+		pinctrl_alive: pinctrl@15850000 {
+			compatible = "samsung,exynos9820-pinctrl";
+			reg = <0x15850000 0x1000>;
+
+			wakeup-interrupt-controller {
+				compatible = "samsung,exynos7-wakeup-eint";
+			};
+		};
+
+		pmu_system_controller: system-controller@15860000 {
+			compatible = "samsung,exynos9820-pmu",
+				     "samsung,exynos7-pmu",
+				     "syscon";
+			reg = <0x15860000 0x10000>;
+
+			google,pmu-intr-gen-syscon = <&pmu_intr_gen>;
+
+			poweroff: syscon-poweroff {
+				compatible = "syscon-poweroff";
+				regmap = <&pmu_system_controller>;
+				offset = <0x030c>; /* PS_HOLD_CONTROL */
+				mask = <0x100>;
+				value = <0x0>; /* De-assert PS_HOLD_EN */
+			};
+
+			reboot: syscon-reboot {
+				compatible = "syscon-reboot";
+				regmap = <&pmu_system_controller>;
+				offset = <0x3a00>; /* SWRESET */
+				mask = <0x2>;
+			};
+
+			reboot-mode {
+				compatible = "syscon-reboot-mode";
+				offset = <0x080c>; /* SEC_DEBUG_PANIC_INFORM */
+
+				mode-download = <0x12345671>;
+				mode-charging = <0x12345673>;
+				mode-recovery = <0x12345674>;
+				mode-bootloader = <0x1234567d>;
+			};
+		};
+
+		pd_aud: power-domain@15861900 {
+			compatible = "samsung,exynos9820-pd";
+			reg = <0x15861900 0x20>;
+			#power-domain-cells = <0>;
+			label = "AUD";
+			samsung,tzpc-base = <0x18c62000>;
+		};
+
+		pd_npu0: power-domain@15861d00 {
+			compatible = "samsung,exynos9820-pd";
+			reg = <0x15861d00 0x20>;
+			#power-domain-cells = <0>;
+			label = "NPU0";
+		};
+
+		pd_npu1: power-domain@15861d80 {
+			compatible = "samsung,exynos9820-pd";
+			reg = <0x15861d80 0x20>;
+			#power-domain-cells = <0>;
+			power-domains = <&pd_npu0>;
+			label = "NPU1";
+		};
+
+		pd_dpu: power-domain@15861e00 {
+			compatible = "samsung,exynos9820-pd";
+			reg = <0x15861e00 0x20>;
+			#power-domain-cells = <0>;
+			label = "DPU";
+
+			/*
+			 * Disabled until a proper display panel is implemented.
+			 * Make sure to mark pd_isppre as a child after enabling.
+			 */
+			status = "disabled";
+		};
+
+		pd_dspm: power-domain@15861e80 {
+			compatible = "samsung,exynos9820-pd";
+			reg = <0x15861e80 0x20>;
+			#power-domain-cells = <0>;
+			label = "DSPM";
+		};
+
+		pd_dsps: power-domain@15861f00 {
+			compatible = "samsung,exynos9820-pd";
+			reg = <0x15861f00 0x20>;
+			#power-domain-cells = <0>;
+			power-domains = <&pd_dspm>;
+			label = "DSPS";
+		};
+
+		pd_embedded_g3d: power-domain@15862100 {
+			compatible = "samsung,exynos9820-pd";
+			reg = <0x15862100 0x20>;
+			#power-domain-cells = <0>;
+			label = "G3D";
+		};
+
+		pd_fsys0a: power-domain@15862200 {
+			compatible = "samsung,exynos9820-pd";
+			reg = <0x15862200 0x20>;
+			#power-domain-cells = <0>;
+			label = "FSYS0A";
+			status = "disabled";
+		};
+
+		pd_g2d: power-domain@15862300 {
+			compatible = "samsung,exynos9820-pd";
+			reg = <0x15862300 0x20>;
+			#power-domain-cells = <0>;
+			label = "G2D";
+		};
+
+		pd_isphq: power-domain@15862400 {
+			compatible = "samsung,exynos9820-pd";
+			reg = <0x15862400 0x20>;
+			#power-domain-cells = <0>;
+			label = "ISPHQ";
+		};
+
+		pd_isplp: power-domain@15862480 {
+			compatible = "samsung,exynos9820-pd";
+			reg = <0x15862480 0x20>;
+			#power-domain-cells = <0>;
+			label = "ISPLP";
+		};
+
+		pd_isppre: power-domain@15862500 {
+			compatible = "samsung,exynos9820-pd";
+			reg = <0x15862500 0x20>;
+			#power-domain-cells = <0>;
+			/* power-domains = <&pd_dpu>; */
+			label = "ISPPRE";
+		};
+
+		pd_iva: power-domain@15862580 {
+			compatible = "samsung,exynos9820-pd";
+			reg = <0x15862580 0x20>;
+			#power-domain-cells = <0>;
+			label = "IVA";
+		};
+
+		pd_mfc: power-domain@15862600 {
+			compatible = "samsung,exynos9820-pd";
+			reg = <0x15862600 0x20>;
+			#power-domain-cells = <0>;
+			label = "MFC";
+			/* stock need_smc, pm-domains.dtsi */
+			samsung,tzpc-base = <0x18820204>;
+		};
+
+
+		pd_vts: power-domain@15862a80 {
+			compatible = "samsung,exynos9820-pd";
+			reg = <0x15862a80 0x20>;
+			#power-domain-cells = <0>;
+			label = "VTS";
+		};
+
+		pd_vra2: power-domain@15862b00 {
+			compatible = "samsung,exynos9820-pd";
+			reg = <0x15862b00 0x20>;
+			#power-domain-cells = <0>;
+			power-domains = <&pd_isplp>;
+			label = "VRA2";
+		};
+
+		pmu_intr_gen: syscon@15870000 {
+			compatible = "samsung,exynos9820-pmu-intr-gen", "syscon";
+			reg = <0x15870000 0x1000>;
+		};
+
+		ap2apm_mailbox: mailbox@15900000 {
+			compatible = "google,gs101-mbox";
+			reg = <0x15900000 0x1000>;
+			clocks = <&cmu_apm CLK_GOUT_APM_MAILBOX_APM_AP_PCLK>;
+			clock-names = "pclk";
+			interrupts = <GIC_SPI 40 IRQ_TYPE_LEVEL_HIGH>;
+			#mbox-cells = <0>;
+		};
+
+		cmu_cmgp: clock-controller@15c00000 {
+			compatible = "samsung,exynos9820-cmu-cmgp";
+			reg = <0x15c00000 0x10000>;
+			#clock-cells = <1>;
+
+			clock-names = "oscclk",
+				      "bus";
+			clocks = <&oscclk>,
+				 <&cmu_apm CLK_DOUT_CMU_CMGP_BUS>;
+			samsung,sysreg = <&sysreg_cmgp>;
+		};
+
+		sysreg_cmgp: syscon@15c20000 {
+			compatible = "samsung,exynos9820-cmgp-sysreg", "syscon";
+			reg = <0x15c20000 0x10000>;
+			clocks = <&cmu_cmgp CLK_GOUT_CMGP_SYSREG_CMGP_PCLK>;
+		};
+
+		pinctrl_cmgp: pinctrl@15c30000 {
+			compatible = "samsung,exynos9820-pinctrl";
+			reg = <0x15c30000 0x1000>;
+			clocks = <&cmu_cmgp CLK_GOUT_CMGP_GPIO_CMGP_PCLK>;
+			clock-names = "pclk";
+
+			wakeup-interrupt-controller {
+				compatible = "samsung,exynos7-wakeup-eint";
+			};
+		};
+
+		usi_cmgp3: usi@15d600c0 {
+			compatible = "samsung,exynos850-usi";
+			reg = <0x15d600c0 0x20>;
+			ranges;
+
+			clock-names = "pclk",
+				      "ipclk";
+			clocks = <&cmu_cmgp CLK_GOUT_CMGP_USI_CMGP3_PCLK>,
+				 <&cmu_cmgp CLK_GOUT_CMGP_USI_CMGP3_IPCLK>;
+
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			samsung,sysreg = <&sysreg_cmgp 0x2030>;
+			status = "disabled";
+
+			hsi2c45: i2c@15d60000 {
+				compatible = "samsung,exynosautov9-hsi2c";
+				reg = <0x15d60000 0xc0>;
+
+				clock-names = "hsi2c",
+					      "hsi2c_pclk";
+				clocks = <&cmu_cmgp CLK_GOUT_CMGP_USI_CMGP3_IPCLK>,
+					 <&cmu_cmgp CLK_GOUT_CMGP_USI_CMGP3_PCLK>;
+
+				interrupts = <GIC_SPI 82 IRQ_TYPE_LEVEL_HIGH>;
+				pinctrl-0 = <&hsi2c45_bus>;
+				pinctrl-names = "default";
+
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				status = "disabled";
+			};
+		};
+
+		cmu_g3d: clock-controller@18400000 {
+			compatible = "samsung,exynos9820-cmu-g3d";
+			reg = <0x18400000 0x10000>;
+			#clock-cells = <1>;
+
+			clock-names = "oscclk";
+			clocks = <&oscclk>;
+			samsung,sysreg = <&sysreg_g3d>;
+		};
+
+		sysreg_g3d: syscon@18420000 {
+			compatible = "samsung,exynos9820-g3d-sysreg", "syscon";
+			reg = <0x18420000 0x10000>;
+			/* Clock omitted to keep the clock driver simple */
+		};
+
+		/*
+		 * No power-domains: switching G3D back on needs an EL3 call to
+		 * restore its TZPC, which the mainline PD driver does not make.
+		 * Boards keep pd_embedded_g3d in the state the bootloader left.
+		 * Downstream runs the GPU non-coherent, hence no dma-coherent.
+		 */
+		gpu: gpu@18500000 {
+			compatible = "samsung,exynos9820-mali", "arm,mali-bifrost";
+			reg = <0x18500000 0x5000>;
+			interrupts = <GIC_SPI 288 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 287 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 289 IRQ_TYPE_LEVEL_HIGH>;
+			interrupt-names = "job", "mmu", "gpu";
+			clocks = <&acpm_ipc EXYNOS9820_CLK_ACPM_DVFS_G3D>;
+			operating-points-v2 = <&gpu_opp_table>;
+			#cooling-cells = <2>;
+			status = "disabled";
+		};
+
+		pinctrl_aud: pinctrl@18c60000 {
+			compatible = "samsung,exynos9820-pinctrl";
+			reg = <0x18c60000 0x1000>;
+		};
+
+		/*
+		 * The ABOX's own IOMMU. The calliope firmware runs from fixed
+		 * IOVAs (DRAM at 0x80000000, VSS at 0xa0000000, ...), so the
+		 * ABOX driver attaches its own domain and maps everything.
+		 */
+		sysmmu_aud: iommu@18e00000 {
+			compatible = "samsung,exynos-sysmmu";
+			reg = <0x18e00000 0x9000>;
+			interrupts = <GIC_SPI 48 IRQ_TYPE_LEVEL_HIGH>;
+			power-domains = <&pd_aud>;
+			/*
+			 * Unreadable until pd_aud has been cycled (TZPC restore),
+			 * so no version probe; its clock gate is CMU_AUD's own.
+			 * Register layout = mainline's v7 non-VM variant (stock
+			 * fault regs 0x70/0x78, PT_BASE_PPN 0x0c).
+			 */
+			samsung,sysmmu-version = <7 0>;
+			#iommu-cells = <0>;
+		};
+
+		abox: audio-controller@18c50000 {
+			compatible = "samsung,exynos9820-abox";
+			/* sysreg: read only with the AUD PLL running (SoC hangs otherwise) */
+			reg = <0x18c50000 0x10000>,
+			      <0x18c00000 0x10000>,
+			      <0x18d00000 0x59000>,
+			      <0x18ce0000 0x10000>,
+			      <0x18c10000 0x10000>,
+			      <0x18cf1000 0x1000>,
+			      <0x18cf2000 0x1004>;
+			reg-names = "sfr", "cmu", "sram", "timer", "sysreg",
+				    "gicd", "gicc";
+			/* the ABOX GIC's output towards the AP */
+			interrupts = <GIC_SPI 46 IRQ_TYPE_EDGE_RISING>;
+			iommus = <&sysmmu_aud>;
+			power-domains = <&pd_aud>;
+			samsung,pmu-syscon = <&pmu_system_controller>;
+			#sound-dai-cells = <1>;
+			status = "disabled";
+		};
+
+		/*
+		 * In pd_mfc, which power-cycles: the driver saves and restores
+		 * the whole CMU. A cold one comes up on OSCCLK, hence the
+		 * assigned parents.
+		 */
+		cmu_mfc: clock-controller@18800000 {
+			compatible = "samsung,exynos9820-cmu-mfc";
+			reg = <0x18800000 0x10000>;
+			#clock-cells = <1>;
+
+			clock-names = "oscclk", "bus", "wfd";
+			clocks = <&oscclk>,
+				 <&cmu_top CLK_DOUT_CMU_MFC_MFC>,
+				 <&cmu_top CLK_DOUT_CMU_MFC_WFD>;
+			assigned-clocks = <&cmu_mfc CLK_MOUT_MFC_MFC_USER>,
+					  <&cmu_mfc CLK_MOUT_MFC_WFD_USER>,
+					  <&cmu_mfc CLK_DOUT_MFC_BUSP>;
+			assigned-clock-parents = <&cmu_top CLK_DOUT_CMU_MFC_MFC>,
+						 <&cmu_top CLK_DOUT_CMU_MFC_WFD>,
+						 <0>;
+			assigned-clock-rates = <0>, <0>, <33333334>;	/* S-Boot: /4 */
+			power-domains = <&pd_mfc>;
+		};
+
+		/*
+		 * The MFC's two SysMMUs (its D0/D1 bus ports). Version 7.3 read
+		 * from 0x34 with the domain on; given here so probe reads
+		 * nothing (the v7 capability offsets are holes). The clock makes
+		 * CMU_MFC resume, and restore itself, before they are programmed.
+		 */
+		sysmmu_mfc0: iommu@18890000 {
+			compatible = "samsung,exynos-sysmmu";
+			reg = <0x18890000 0x9000>;
+			interrupts = <GIC_SPI 343 IRQ_TYPE_LEVEL_HIGH>;
+			clock-names = "sysmmu";
+			clocks = <&cmu_mfc CLK_GOUT_MFC_SYSMMU_MFCD0_CLK>;
+			power-domains = <&pd_mfc>;
+			samsung,sysmmu-version = <7 3>;
+			#iommu-cells = <0>;
+		};
+
+		sysmmu_mfc1: iommu@188b0000 {
+			compatible = "samsung,exynos-sysmmu";
+			reg = <0x188b0000 0x9000>;
+			interrupts = <GIC_SPI 345 IRQ_TYPE_LEVEL_HIGH>;
+			clock-names = "sysmmu";
+			clocks = <&cmu_mfc CLK_GOUT_MFC_SYSMMU_MFCD1_CLK>;
+			power-domains = <&pd_mfc>;
+			samsung,sysmmu-version = <7 3>;
+			#iommu-cells = <0>;
+		};
+
+		/* MFC v13 (ip_ver 0x1300), firmware s5p-mfc-v13.fw */
+		mfc: video-codec@188d0000 {
+			compatible = "samsung,exynos9820-mfc";
+			reg = <0x188d0000 0x10000>;
+			interrupts = <GIC_SPI 338 IRQ_TYPE_LEVEL_HIGH>;
+			clock-names = "mfc";
+			clocks = <&cmu_mfc CLK_GOUT_MFC_MFC_ACLK>;
+			iommus = <&sysmmu_mfc0>, <&sysmmu_mfc1>;
+			power-domains = <&pd_mfc>;
+			status = "disabled";
+		};
+
+		cmu_dpu: clock-controller@19000000 {
+			compatible = "samsung,exynos9820-cmu-dpu";
+			reg = <0x19000000 0x10000>;
+			#clock-cells = <1>;
+
+			clock-names = "oscclk",
+				      "bus";
+			clocks = <&oscclk>,
+				 <&cmu_top CLK_DOUT_CMU_DPU_BUS>;
+			samsung,sysreg = <&sysreg_dpu>;
+		};
+
+		/*
+		 * Flip-only takeover of the pipeline S-Boot leaves running:
+		 * no clocks, power domain or IOMMU on purpose (DPU-SPEC.md).
+		 */
+		/*
+		 * SysMMU_DPUD0, in front of the VGRFS and GF0 DMA ports. S-Boot
+		 * leaves it in bypass. Clocked whenever DPU is (its Q-channel is
+		 * held off with CLOCK_REQ set), and it sits in pd_dpu, which
+		 * stays untouched, so no clocks or power domain here.
+		 * Version 7.3 (0x34 reads 0x70600000) is given because the v7
+		 * capability registers are not probed: CAPA at 0x30 is a hole
+		 * on this instance, and a read of a hole resets the SoC.
+		 */
+		sysmmu_dpud0: iommu@190a0000 {
+			compatible = "samsung,exynos-sysmmu";
+			reg = <0x190a0000 0x9000>;
+			interrupts = <GIC_SPI 212 IRQ_TYPE_LEVEL_HIGH>;
+			samsung,sysmmu-version = <7 3>;
+			#iommu-cells = <0>;
+		};
+
+		decon: display-controller@19030000 {
+			compatible = "samsung,exynos9820-decon-handover";
+			reg = <0x19030000 0x10000>,
+			      <0x19071000 0x1000>,
+			      <0x19080000 0x1000>;
+			reg-names = "decon", "idma-gf0", "dsim";
+			interrupts = <GIC_SPI 183 IRQ_TYPE_LEVEL_HIGH>;
+			iommus = <&sysmmu_dpud0>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+		};
+
+		sysreg_dpu: syscon@19010000 {
+			compatible = "samsung,exynos9820-dpu-sysreg", "syscon";
+			reg = <0x19010000 0x10000>;
+			clocks = <&cmu_dpu CLK_GOUT_DPU_SYSREG_DPU_PCLK>;
+		};
+
+		sysreg_core: syscon@1a020000 {
+			compatible = "samsung,exynos9820-core-sysreg", "syscon";
+			reg = <0x1a020000 0x10000>;
+			/* Clock omitted to keep the clock driver simple */
+		};
+
+		cmu_core: clock-controller@1a030000 {
+			compatible = "samsung,exynos9820-cmu-core";
+			reg = <0x1a030000 0x10000>;
+			#clock-cells = <1>;
+
+			clock-names = "oscclk",
+				      "bus";
+			clocks = <&oscclk>,
+				 <&cmu_top CLK_DOUT_CMU_CORE_BUS>;
+			samsung,sysreg = <&sysreg_core>;
+		};
+
+		cmu_busc: clock-controller@1a200000 {
+			compatible = "samsung,exynos9820-cmu-busc";
+			reg = <0x1a200000 0x10000>;
+			#clock-cells = <1>;
+
+			clock-names = "oscclk",
+				      "bus";
+			clocks = <&oscclk>,
+				 <&cmu_top CLK_DOUT_CMU_BUSC_BUS>;
+			samsung,sysreg = <&sysreg_busc>;
+		};
+
+		sysreg_busc: syscon@1a220000 {
+			compatible = "samsung,exynos9820-busc-sysreg", "syscon";
+			reg = <0x1a220000 0x10000>;
+			clocks = <&cmu_busc CLK_GOUT_BUSC_SYSREG_BUSC_PCLK>;
+		};
+
+		cmu_top: clock-controller@1a240000 {
+			compatible = "samsung,exynos9820-cmu-top";
+			reg = <0x1a240000 0x10000>;
+			#clock-cells = <1>;
+
+			clock-names = "oscclk";
+			clocks = <&oscclk>;
+		};
+
+		cmu_mif0: clock-controller@1bc00000 {
+			compatible = "samsung,exynos9820-cmu-mif";
+			reg = <0x1bc00000 0x10000>;
+			#clock-cells = <1>;
+
+			clock-names = "oscclk",
+				      "bus";
+			clocks = <&oscclk>,
+				 <&cmu_top CLK_DOUT_CMU_MIF_BUSP>;
+			samsung,sysreg = <&sysreg_mif0>;
+		};
+
+		sysreg_mif0: syscon@1bc20000 {
+			compatible = "samsung,exynos9820-mif0-sysreg", "syscon";
+			reg = <0x1bc20000 0x10000>;
+			/* Clock omitted to keep the clock driver simple */
+		};
+
+		cmu_mif1: clock-controller@1bd00000 {
+			compatible = "samsung,exynos9820-cmu-mif";
+			reg = <0x1bd00000 0x10000>;
+			#clock-cells = <1>;
+
+			clock-names = "oscclk",
+				      "bus";
+			clocks = <&oscclk>,
+				 <&cmu_top CLK_DOUT_CMU_MIF_BUSP>;
+			samsung,sysreg = <&sysreg_mif1>;
+		};
+
+		sysreg_mif1: syscon@1bd20000 {
+			compatible = "samsung,exynos9820-mif1-sysreg", "syscon";
+			reg = <0x1bd20000 0x10000>;
+			/* Clock omitted to keep the clock driver simple */
+		};
+
+		cmu_mif2: clock-controller@1be00000 {
+			compatible = "samsung,exynos9820-cmu-mif";
+			reg = <0x1be00000 0x10000>;
+			#clock-cells = <1>;
+
+			clock-names = "oscclk",
+				      "bus";
+			clocks = <&oscclk>,
+				 <&cmu_top CLK_DOUT_CMU_MIF_BUSP>;
+			samsung,sysreg = <&sysreg_mif2>;
+		};
+
+		sysreg_mif2: syscon@1be20000 {
+			compatible = "samsung,exynos9820-mif2-sysreg", "syscon";
+			reg = <0x1be20000 0x10000>;
+			/* Clock omitted to keep the clock driver simple */
+		};
+
+		cmu_mif3: clock-controller@1bf00000 {
+			compatible = "samsung,exynos9820-cmu-mif";
+			reg = <0x1bf00000 0x10000>;
+			#clock-cells = <1>;
+
+			clock-names = "oscclk",
+				      "bus";
+			clocks = <&oscclk>,
+				 <&cmu_top CLK_DOUT_CMU_MIF_BUSP>;
+			samsung,sysreg = <&sysreg_mif3>;
+		};
+
+		sysreg_mif3: syscon@1bf20000 {
+			compatible = "samsung,exynos9820-mif3-sysreg", "syscon";
+			reg = <0x1bf20000 0x10000>;
+			/* Clock omitted to keep the clock driver simple */
+		};
+
+		sysreg_cpucl0: syscon@1d000000 {
+			compatible = "samsung,exynos9820-cpucl0-sysreg", "syscon";
+			reg = <0x1d000000 0x10000>;
+			/* Clock omitted to keep the clock driver simple */
+		};
+
+		cmu_cpucl0: clock-controller@1d020000 {
+			compatible = "samsung,exynos9820-cmu-cpucl0";
+			reg = <0x1d020000 0x10000>;
+			#clock-cells = <1>;
+
+			clock-names = "oscclk";
+			clocks = <&oscclk>;
+			samsung,sysreg = <&sysreg_cpucl0>;
+		};
+
+		sysreg_cpucl2: syscon@1d100000 {
+			compatible = "samsung,exynos9820-cpucl2-sysreg", "syscon";
+			reg = <0x1d100000 0x10000>;
+			/* Clock omitted to keep the clock driver simple */
+		};
+
+		cmu_cpucl2: clock-controller@1d120000 {
+			compatible = "samsung,exynos9820-cmu-cpucl2";
+			reg = <0x1d120000 0x10000>;
+			#clock-cells = <1>;
+
+			clock-names = "oscclk";
+			clocks = <&oscclk>;
+			samsung,sysreg = <&sysreg_cpucl2>;
+		};
+
+		/* TODO: interrupts, add driver support */
+		/* TODO: pinctrl */
+		/* TODO: pmu_system_controller */
+		/* TODO: DMA */
+	};
+
+	apm_sram: sram@2039000 {
+		compatible = "mmio-sram";
+		reg = <0x0 0x2039000 0x30000>;
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges = <0x0 0x0 0x2039000 0x30000>;
+	};
+
+	timer {
+		compatible = "arm,armv8-timer";
+
+		/* Hypervisor Virtual Timer interrupt is not wired to GIC */
+		interrupts = <GIC_PPI 13 (GIC_CPU_MASK_SIMPLE(8) | IRQ_TYPE_LEVEL_LOW)>,
+			    	 <GIC_PPI 14 (GIC_CPU_MASK_SIMPLE(8) | IRQ_TYPE_LEVEL_LOW)>,
+			    	 <GIC_PPI 11 (GIC_CPU_MASK_SIMPLE(8) | IRQ_TYPE_LEVEL_LOW)>,
+			    	 <GIC_PPI 10 (GIC_CPU_MASK_SIMPLE(8) | IRQ_TYPE_LEVEL_LOW)>;
+
+		/*
+		 * Non-updatable, broken stock Samsung bootloader does not
+		 * configure CNTFRQ_EL0
+		 */
+		clock-frequency = <26000000>;
+	};
+};
+
+#include "exynos9820-pinctrl.dtsi"
+#include "exynos9820-tmu.dtsi"

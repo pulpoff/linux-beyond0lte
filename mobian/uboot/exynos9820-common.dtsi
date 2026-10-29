@@ -1,0 +1,304 @@
+// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
+/*
+ * Device tree source common to beyond EXYNOS9820 devices
+ *
+ * Copyright (c) 2026 chiffathefox <chiffathefoxx@gmail.com>
+ */
+
+/dts-v1/;
+#include "exynos9820.dtsi"
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/soc/samsung,exynos-usi.h>
+
+/ {
+	battery: battery {
+		compatible = "simple-battery";
+		over-voltage-threshold-microvolt = <4500000>;
+		voltage-min-design-microvolt = <3480000>;
+		voltage-max-design-microvolt = <4350000>;
+	};
+
+	chosen {
+		#address-cells = <2>;
+		#size-cells = <1>;
+		ranges;
+		stdout-path = &serial0;
+	};
+
+	gpio-keys {
+		compatible = "gpio-keys";
+
+		pinctrl-0 = <&key_volup &key_voldown &key_wink &key_power>;
+		pinctrl-names = "default";
+
+		key-volup {
+			label = "Volume Up Key";
+			linux,code = <KEY_VOLUMEUP>;
+			gpios = <&gpa0 3 GPIO_ACTIVE_LOW>;
+		};
+
+		key-voldown {
+			label = "Volume Down Key";
+			linux,code = <KEY_VOLUMEDOWN>;
+			gpios = <&gpa0 4 GPIO_ACTIVE_LOW>;
+		};
+
+		key-wink {
+			label = "Wink Key";
+			linux,code = <KEY_COFFEE>;
+			gpios = <&gpa0 6 GPIO_ACTIVE_LOW>;
+		};
+
+		key-power {
+			label = "Power Key";
+			linux,code = <KEY_POWER>;
+			gpios = <&gpa2 4 GPIO_ACTIVE_LOW>;
+			wakeup-source;
+		};
+	};
+
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <1>;
+		ranges;
+
+		sec_debug_magic@80000000 {
+			reg = <0x0 0x80000000 0x1000>;
+			no-map;
+		};
+
+		kaslr_seed@80001000 {
+			reg = <0x0 0x80001000 0x1000>;
+			no-map;
+		};
+
+		el2_code@87000000 {
+			reg = <0x0 0x87000000 0x200000>;
+			no-map;
+		};
+
+		mm_debug@91200000 {
+			reg = <0x0 0x91200000 0x1000>;
+			no-map;
+		};
+
+		secure_camera@96000000 {
+			reg = <0x0 0x96000000 0x2200000>;
+			no-map;
+		};
+
+		seclog_mem@c0000000 {
+			reg = <0x0 0xc0000000 0x80000>;
+			no-map;
+		};
+
+		/* S-Boot's scanout buffer, mapped 1:1 for DECON's SysMMU */
+		fb_region: framebuffer_region@ca000000 {
+			reg = <0x0 0xca000000 (1440 * 3040 * 4)>;
+			iommu-addresses = <&decon 0xca000000 (1440 * 3040 * 4)>;
+			no-map;
+		};
+
+		modem_spare@d0000000 {
+			reg = <0x0 0xd0000000 0x1600000>;
+			no-map;
+		};
+
+		modem_if: modem_if@f0000000 {
+			reg = <0x0 0xf0000000 0xb900000>;
+			no-map;
+		};
+
+		cp_ram_logging@fb900000 {
+			reg = <0x0 0xfb900000 0x2000000>;
+			no-map;
+		};
+
+		el2_earlymem@9fd800000 {
+			reg = <0x9 0xfd800000 0x2800000>;
+			no-map;
+		};
+	};
+
+	/* TODO: Implement PMIC */
+	reg_dummy: regulator-0 {
+		compatible = "regulator-fixed";
+		regulator-name = "dummy_reg";
+	};
+
+	vib_regulator: gpio-regulator {
+		compatible = "regulator-fixed";
+
+		regulator-name = "haptic";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+
+		gpio = <&gpg1 7 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+
+		regulator-boot-on;
+	};
+};
+
+&acpm_ipc {
+	pmic-1 {
+		compatible = "samsung,s2mps19-pmic";
+		interrupts-extended = <&gpa0 1 IRQ_TYPE_LEVEL_LOW>;
+		wakeup-source;
+
+		regulators {
+			ldo19m: ldo19m {
+				regulator-name = "tsp_io";
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <1800000>;
+				regulator-boot-on;
+			};
+
+			ldo27m: ldo27m {
+				regulator-name = "tsp_avdd";
+				regulator-min-microvolt = <3000000>;
+				regulator-max-microvolt = <3000000>;
+				regulator-boot-on;
+			};
+		};
+	};
+};
+
+&hsi2c10 {
+	clock-frequency = <400000>;
+	status = "okay";
+
+	touchscreen@48 {
+		compatible = "samsung,s6sy761";
+		reg = <0x48>;
+
+		avdd-supply = <&ldo27m>;
+		vdd-supply = <&ldo19m>;
+
+		interrupts-extended = <&gpa1 0 IRQ_TYPE_LEVEL_LOW>;
+
+		pinctrl-0 = <&ts_int>;
+		pinctrl-names = "default";
+	};
+};
+
+&hsi2c45 {
+	clock-frequency = <400000>;
+	status = "okay";
+
+	fuel-gauge@36 {
+		reg = <0x36>;
+		compatible = "maxim,max77705-battery";
+		power-supplies = <&max77705_charger>;
+		maxim,rsns-microohm = <5000>;
+		interrupt-parent = <&max77705>;
+		interrupts = <2>;
+	};
+
+	max77705: pmic@66 {
+		compatible = "maxim,max77705";
+		reg = <0x66>;
+
+		interrupts-extended = <&gpa1 6 IRQ_TYPE_LEVEL_LOW>;
+		interrupt-controller;
+		#interrupt-cells = <1>;
+
+		pinctrl-0 = <&pmic_int>;
+		pinctrl-names = "default";
+
+		haptic {
+			compatible = "maxim,max77705-haptic";
+			haptic-supply = <&vib_regulator>;
+			pwms = <&pwm 1 48828 0>;
+		};
+	};
+
+	max77705_charger: charger@69 {
+		reg = <0x69>;
+		compatible = "maxim,max77705-charger";
+		monitored-battery = <&battery>;
+		interrupt-parent = <&max77705>;
+		interrupts = <0>;
+	};
+};
+
+&oscclk {
+	clock-frequency = <26000000>;
+};
+
+&pinctrl_alive {
+	key_volup: key-volup-pins {
+		samsung,pins = "gpa0-3";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <EXYNOS5433_PIN_DRV_FAST_SR1>;
+	};
+
+	key_voldown: key-voldown-pins {
+		samsung,pins = "gpa0-4";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <EXYNOS5433_PIN_DRV_FAST_SR1>;
+	};
+
+	key_wink: key-wink-pins {
+		samsung,pins = "gpa0-6";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <EXYNOS5433_PIN_DRV_FAST_SR1>;
+	};
+
+	key_power: key-power-pins {
+		samsung,pins = "gpa2-4";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <EXYNOS5433_PIN_DRV_FAST_SR1>;
+	};
+
+	pmic_int: pmic-int {
+		samsung,pins = "gpa1-6";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV1>;
+	};
+
+	ts_int: ts-int-pins {
+		samsung,pins = "gpa1-0";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <EXYNOS7_PIN_DRV_LV1>;
+	};
+};
+
+&pwm {
+	status = "okay";
+};
+
+&serial0 {
+	status = "okay";
+};
+
+&usbdrd_phy {
+	status = "okay";
+};
+
+&usbdrd {
+	status = "okay";
+	vdd10-supply = <&reg_dummy>;
+	vdd33-supply = <&reg_dummy>;
+};
+
+&usi3 {
+	status = "okay";
+	samsung,mode = <USI_MODE_I2C>;
+};
+
+&usi_cmgp3 {
+	status = "okay";
+	samsung,mode = <USI_MODE_I2C>;
+};
+
+&ufs {
+	status = "okay";
+};

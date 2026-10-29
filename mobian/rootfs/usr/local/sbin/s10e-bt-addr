@@ -1,0 +1,18 @@
+#!/bin/sh
+# Give hci0 the phone's own Bluetooth address, read from Samsung's EFS
+# partition (bt_addr). Without it the BCM4375 comes up as 43:75:B1:00:1F:AC.
+set -e
+# wait until hci_bcm has loaded the patch: before that the address reads 00:00:...
+ready() { btmgmt --index 0 info 2>/dev/null | grep -q 'addr ' && ! btmgmt --index 0 info | grep -q 'addr 00:00:00:00:00:00'; }
+for i in $(seq 1 60); do ready && break; sleep 1; done
+ready || exit 0
+m=/run/s10e-efs
+mkdir -p $m
+mount -o ro /dev/disk/by-partlabel/efs $m
+addr=$(tr -d '\r\n' < $m/bluetooth/bt_addr 2>/dev/null || true)
+umount $m
+echo "$addr" | grep -Eq '^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$' || exit 0
+# the kernel only takes a new address while the controller is powered off
+btmgmt --index 0 power off >/dev/null
+btmgmt --index 0 public-addr "$addr"
+btmgmt --index 0 power on >/dev/null

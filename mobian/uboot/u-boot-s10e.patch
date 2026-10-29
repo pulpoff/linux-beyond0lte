@@ -1,0 +1,1418 @@
+diff --git a/board/samsung/exynos-mobile/exynos-mobile.c b/board/samsung/exynos-mobile/exynos-mobile.c
+index 9416c8a5..940422b8 100644
+--- a/board/samsung/exynos-mobile/exynos-mobile.c
++++ b/board/samsung/exynos-mobile/exynos-mobile.c
+@@ -182,6 +182,14 @@ static struct exynos_board_info exynos_board_info_match[] = {
+ 		.match = exynos7870_fdt_match,
+ 		.match_model = "G610",
+ 		.match_max_rev = U8_MAX,
++	}, {
++		/* Samsung Galaxy S10e */
++		.name = "beyond0lte",
++		.chip = "exynos9820",
++		.dram_bank_bases = exynos9820_common_dram_bank_bases,
++		.match = exynos7870_fdt_match,
++		.match_model = "G970",
++		.match_max_rev = U8_MAX,
+ 	}, {
+ 		/* Samsung Galaxy S10 */
+ 		.name = "beyond1lte",
+diff --git a/board/samsung/exynos-mobile/exynos-mobile.env b/board/samsung/exynos-mobile/exynos-mobile.env
+index 4e68f8c3..5edd83c0 100644
+--- a/board/samsung/exynos-mobile/exynos-mobile.env
++++ b/board/samsung/exynos-mobile/exynos-mobile.env
+@@ -1,34 +1,88 @@
+ stdin=serial,button-kbd
+-stdout=serial,vidconsole
+-stderr=serial,vidconsole
++/* Quiet by default: S-Boot's Debian logo (up_param logo.jpg) stays on the
++ * screen (NO_FB_CLEAR). s10e_screen brings the text console up for the
++ * menu and for a failed boot. */
++stdout=serial
++stderr=serial
+ 
+ bootdelay=0
++kernel_addr_r=0xa8000000
++ramdisk_addr_r=0xb0000000
++s10e_part=20
++s10e_args=console=tty0 quiet splash phy_exynos5_usbdrd.exynos9820_ss=0 loglevel=3 vt.global_cursor_default=0 systemd.show_status=false udev.log_level=3 panic=0 s10e.root=PARTLABEL=linux
++s10e_args_verbose=console=tty0 loglevel=7 phy_exynos5_usbdrd.exynos9820_ss=0 panic=0 s10e.root=PARTLABEL=linux
++
++s10e_screen=setenv stdout serial,vidconsole; setenv stderr serial,vidconsole; cls
++
++/* S-Boot picks recovery/download/normal from PMU registers that only the
++ * Samsung kernel ever resets (drivers/samsung/sec_reboot.c): INFORM3
++ * 0x1586080c = 0x12345670 | reason (0 normal, 1 download, 4 recovery),
++ * INFORM2 0x15860808 bits 16-23 = 0x4e (normal, not LPM charging), and
++ * SYSIP_DAT0 0x15860810 = 0xff for recovery. A bare reset leaves the old
++ * "recovery" there, so every restart came back here. */
++s10e_reason=setexpr.l s10e_i2 *0x15860808 "&" 0xff00ffff;
++	setexpr s10e_i2 ${s10e_i2} "|" 0x4e0000;
++	mw.l 0x15860808 ${s10e_i2};
++	mw.l 0x15860810 ${s10e_sysip};
++	mw.l 0x1586080c ${s10e_inform3}
++
++s10e_normal=setenv s10e_sysip 0; setenv s10e_inform3 0x12345670; run s10e_reason
++
++reboot_lineage=run s10e_normal; reset
++
++reboot_download=setenv s10e_sysip 0; setenv s10e_inform3 0x12345671;
++	run s10e_reason; reset
++
+ bootcmd=mw.l 0x19030070 0x1281 1;
+-	setenv loadaddr 0x90000000;
+-	ufs init;
+-	scsi scan;
+-	part start scsi 0 31 ud_start;
+-	part size  scsi 0 31 ud_size;
+-	blkmap create root;
+-	blkmap map root 0 0x${ud_size} linear scsi 0 0x${ud_start};
+-	ls blkmap 0:1;
+-	bootefi bootmgr;
++	run s10e_normal;
++	run s10e_boot;
++	run s10e_screen;
++	echo "Boot failed:";
++	run s10e_load;
++	echo "Any key: menu";
+ 	pause;
+ 	bootmenu
+ 
++s10e_image=Image
++
++s10e_load=ufs init;
++	scsi scan;
++	if part number scsi 0 linux s10e_part; then
++		echo "S10e: linux = scsi 0:${s10e_part} (hex)";
++	else
++		echo "S10e: no partition named linux, trying 0:${s10e_part}";
++	fi;
++	ls scsi 0:${s10e_part} /boot/s10e;
++	if load scsi 0:${s10e_part} ${kernel_addr_r} /boot/s10e/bootargs.env; then
++		echo "S10e: bootargs from /boot/s10e/bootargs.env";
++		env import -t ${kernel_addr_r} ${filesize} s10e_args;
++	fi;
++	echo "S10e: loading ${s10e_image}";
++	load scsi 0:${s10e_part} ${kernel_addr_r} /boot/s10e/${s10e_image} &&
++	echo "S10e: loading initramfs" &&
++	load scsi 0:${s10e_part} ${ramdisk_addr_r} /boot/s10e/initramfs.cpio.gz &&
++	setenv rd_size ${filesize} &&
++	echo "S10e: booting, initramfs ${rd_size} bytes"
++
++s10e_boot=run s10e_load &&
++	setenv bootargs "${s10e_args}" &&
++	booti ${kernel_addr_r} ${ramdisk_addr_r}:${rd_size} ${fdtcontroladdr}
++
++s10e_stay=run s10e_load &&
++	setenv bootargs "${s10e_args_verbose} s10e.stay" &&
++	booti ${kernel_addr_r} ${ramdisk_addr_r}:${rd_size} ${fdtcontroladdr}
++
+ fastbootcmd=echo "Fastboot Mode";
+ 	fastboot -l $fastboot_addr_r usb 0
+ 
+-reboot_recovery=mw.l 0x15860810 0xff; 
+-	mw.l 0x1586080c 0x12345674;
+-	reset
+-
+-bootmenu_0=Continue Boot=boot
+-bootmenu_1=Enter Fastboot Mode=run fastbootcmd
+-bootmenu_2=UEFI Maintenance Menu=eficonfig
+-bootmenu_3=Reboot=reset
+-bootmenu_4=Power Off=poweroff
+-bootmenu_5=Recovery=run reboot_recovery
++bootmenu_0=Mobian=run s10e_boot
++bootmenu_1=Mobian, previous kernel=setenv s10e_image Image.prev; run s10e_boot
++bootmenu_2=Rescue shell (USB)=run s10e_stay
++bootmenu_3=LineageOS=run reboot_lineage
++bootmenu_4=Download mode=run reboot_download
++bootmenu_5=Fastboot (broken)=run fastbootcmd
++bootmenu_6=Console=echo "type: bootmenu"
++bootmenu_7=Power off=run s10e_normal; poweroff
+ 
+ button_cmd_0_name=Volume Down Key
+-button_cmd_0=mw.l 0x19030070 0x1281 1; bootmenu
++button_cmd_0=mw.l 0x19030070 0x1281 1; run s10e_screen; bootmenu
+diff --git a/dts/upstream/src/arm64/exynos/exynos9820-beyond0lte.dts b/dts/upstream/src/arm64/exynos/exynos9820-beyond0lte.dts
+new file mode 100644
+index 00000000..87e2e141
+--- /dev/null
++++ b/dts/upstream/src/arm64/exynos/exynos9820-beyond0lte.dts
+@@ -0,0 +1,723 @@
++// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
++/*
++ * Samsung Galaxy S10e (beyond0lte/SM-G970F) device tree source
++ *
++ * Same board as the S10 (touch, PMIC rails, buttons) with a smaller panel
++ * and battery. Panel size from the vendor DT: 1080x2280, 5.8".
++ */
++
++/dts-v1/;
++#include "exynos9820-common.dtsi"
++#include <dt-bindings/usb/pd.h>
++
++/ {
++	model = "Samsung Galaxy S10e (SM-G970F)";
++
++	compatible = "samsung,beyond0lte", "samsung,exynos9820";
++	chassis-type = "handset";
++
++	chosen {
++		framebuffer0: framebuffer@ca000000 {
++			compatible = "simple-framebuffer";
++			reg = <0x0 0xca000000 (1080 * 2280 * 4)>;
++			width = <1080>;
++			height = <2280>;
++			stride = <(1080 * 4)>;
++			format = "a8r8g8b8";
++			panel = <&panel>;
++
++			/* Dummy panel for simple-framebuffer dimension info */
++			panel: dummy-panel {
++				width-mm = <63>;
++				height-mm = <133>;
++			};
++		};
++	};
++
++	/*
++	 * Carve-outs the S10e's own S-Boot DT reserves (read from the live
++	 * Android /proc/device-tree, 2026-10-28) that the S10 common dtsi
++	 * does not: the EL2 hypervisor's early memory at the top of the 6 GB,
++	 * the RDX boot device, debug-snapshot logs, and the camera blocks.
++	 */
++	reserved-memory {
++		#address-cells = <2>;
++		#size-cells = <1>;
++		ranges;
++
++		el2_earlymem@97e000000 {
++			reg = <0x9 0x7e000000 0x2000000>;
++			no-map;
++		};
++
++		sec_rdx_bootdev@880000000 {
++			reg = <0x8 0x80000000 0xad00000>;
++			no-map;
++		};
++
++		camera_contig@98200000 {
++			reg = <0x0 0x98200000 0xe00000>;
++			no-map;
++		};
++
++		camera@99000000 {
++			reg = <0x0 0x99000000 0xe400000>;
++			no-map;
++		};
++
++		dss_log_s2d@eb308000 {
++			reg = <0x0 0xeb308000 0x1f08000>;
++			no-map;
++		};
++
++		/* Free in the live S10e map. A reset keeps RAM, so the rescue
++		 * shell can read a dead boot's log from /sys/fs/pstore. */
++		ramoops@e8000000 {
++			compatible = "ramoops";
++			reg = <0x0 0xe8000000 0x200000>;
++			record-size = <0x40000>;
++			console-size = <0x100000>;
++			pmsg-size = <0x40000>;
++			ftrace-size = <0x0>;
++		};
++
++		/*
++		 * IOVA only: the MFC's window is stock's [0x10000000,
++		 * 0xd0000000) (s5p-mfc puts the firmware at its start).
++		 */
++		mfc_iova: mfc-iova-reserved {
++			iommu-addresses = <&mfc 0x0 0x10000000>,
++					  <&mfc 0xd0000000 0x30000000>;
++		};
++
++		/* calliope DRAM image (28 MiB) + its private area (8 MiB) */
++		abox_fw_mem: abox-fw@c4000000 {
++			reg = <0x0 0xc4000000 0x2400000>;
++			no-map;
++		};
++
++		dss_logs@fd900000 {
++			reg = <0x0 0xfd900000 0x2700000>;
++			no-map;
++		};
++	};
++};
++
++&battery {
++	compatible = "simple-battery";
++	constant-charge-voltage-max-microvolt = <4350000>;	/* stock chg_float_voltage */
++	constant-charge-current-max-microamp = <2100000>;
++	charge-full-design-microamp-hours = <3100000>;
++};
++
++/*
++ * The MAX77705 CCIC (typec@25) sets the data role through the role switch.
++ * Device mode is the default so the USB gadget (ssh) is up at boot before
++ * the Type-C driver loads; without a role switch dual-role dwc3 waited for
++ * a VBUS change and a cable in at boot needed a replug.
++ */
++&usbdrd_dwc3 {
++	dr_mode = "otg";
++	usb-role-switch;
++	role-switch-default-mode = "peripheral";
++
++	port {
++		usbdrd_dwc3_hs: endpoint {
++			remote-endpoint = <&max77705_typec_hs>;
++		};
++	};
++};
++
++/*
++ * SuperSpeed lanes: the combo PHY is the connector's orientation switch.
++ * Downstream picks the lane pair from gpg0-4 ("PHY_CON", phy,gpio_phy_port)
++ * at every PIPE3 init; the driver does the same and re-inits on a Type-C
++ * orientation change.
++ */
++&usbdrd_phy {
++	orientation-switch;
++	samsung,phy-port-gpios = <&gpg0 4 GPIO_ACTIVE_HIGH>;
++	pinctrl-names = "default";
++	pinctrl-0 = <&usb_phy_port>;
++
++	port {
++		usbdrd_phy_ss: endpoint {
++			remote-endpoint = <&max77705_typec_ss>;
++		};
++	};
++};
++
++&max77705_charger {
++	/* OTG boost bits ORed onto the charger mode; refused while CHGIN is up */
++	max77705_otg_vbus: usb-otg-vbus {
++		regulator-name = "usb_otg_vbus";
++	};
++};
++
++&hsi2c45 {
++	/*
++	 * MAX77705 CCIC ("MUIC" downstream, 0x4a >> 1): Type-C and the PD
++	 * policy engine run in its firmware. As a sink the driver takes a
++	 * fixed PDO of at most 9 V / 15 W (stock pd_charging_charge_power);
++	 * sink-pdos are stock's max77705,snkcap_data without the PPS entries.
++	 */
++	typec@25 {
++		compatible = "maxim,max77705-usbc";
++		reg = <0x25>;
++		interrupt-parent = <&max77705>;
++		interrupts = <3>;
++		vbus-supply = <&max77705_otg_vbus>;
++		maxim,charger = <&max77705_charger>;
++
++		connector {
++			compatible = "usb-c-connector";
++			label = "USB-C";
++			power-role = "dual";
++			data-role = "dual";
++			try-power-role = "sink";
++			sink-pdos = <PDO_FIXED(5000, 3000, PDO_FIXED_DUAL_ROLE |
++						PDO_FIXED_HIGHER_CAP |
++						PDO_FIXED_USB_COMM |
++						PDO_FIXED_DATA_SWAP)
++				     PDO_FIXED(9000, 1670, 0)>;
++			op-sink-microwatt = <15000000>;
++
++			ports {
++				#address-cells = <1>;
++				#size-cells = <0>;
++
++				port@0 {
++					reg = <0>;
++
++					max77705_typec_hs: endpoint {
++						remote-endpoint = <&usbdrd_dwc3_hs>;
++					};
++				};
++
++				port@1 {
++					reg = <1>;
++
++					max77705_typec_ss: endpoint {
++						remote-endpoint = <&usbdrd_phy_ss>;
++					};
++				};
++			};
++		};
++	};
++};
++
++/*
++ * S-Boot picks what to boot from INFORM3 (0x80c); the values are the ones
++ * downstream drivers/samsung/sec_reboot.c writes. Extends the dtsi's node
++ * (the kernel allows one syscon-reboot-mode): a plain reboot goes back to
++ * RECOVERY, where this U-Boot boots Mobian; "reboot android" leaves it.
++ */
++&pmu_system_controller {
++	reboot-mode {
++		mode-normal = <0x12345674>;
++		mode-android = <0x12345670>;
++	};
++};
++
++/*
++ * Wi-Fi: BCM4375 on the GEN2 PCIe channel. WLAN_REG_ON (gpg0-5) powers the
++ * chip from VBAT; downstream waits 200 ms before bringing the link up.
++ */
++&pinctrl_fsys1 {
++	pcie0_clkreq: pcie0-clkreq-pins {
++		samsung,pins = "gpf2-0";
++		samsung,pin-function = <2>;
++		samsung,pin-pud = <3>;
++		samsung,pin-drv = <3>;
++	};
++
++	pcie0_perst: pcie0-perst-pins {
++		samsung,pins = "gpf2-2";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++		samsung,pin-drv = <3>;
++	};
++};
++
++&pinctrl_alive {
++	/* BCM4775 sensor hub: HOST_REQ (hub -> AP, level-high IRQ) */
++	shub_host_req: shub-host-req-pins {
++		samsung,pins = "gpa1-7";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;
++	};
++
++	/* AP_SLEEP ("batch-wake-irq"), an AP output the hub reads */
++	shub_ap_sleep: shub-ap-sleep-pins {
++		samsung,pins = "gpa0-5";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++	};
++
++	shub_int: shub-int-pins {
++		samsung,pins = "gpa4-0";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_INPUT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++	};
++
++	uart1_bus: uart1-bus-pins {
++		samsung,pins = "gpq0-3", "gpq0-2", "gpq0-1", "gpq0-0";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
++		samsung,pin-drv = <0>;
++	};
++
++	codec_irq: codec-irq-pins {
++		samsung,pins = "gpa2-2";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++	};
++
++	bt_hostwake: bt-hostwake-pins {
++		samsung,pins = "gpa2-3";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;
++	};
++};
++
++&pinctrl_cmgp {
++	amp_irq: amp-irq-pins {
++		samsung,pins = "gpm24-0";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++	};
++
++	bt_en: bt-en-pins {
++		samsung,pins = "gpm8-0";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++	};
++};
++
++&pinctrl_aud {
++	/* UAIF0: I2S to the codec AIF1 (BCLK, WS, SDO, SDI) */
++	uaif0_bus: uaif0-bus-pins {
++		samsung,pins = "gpb0-1", "gpb0-2", "gpb0-3", "gpb0-4";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;
++	};
++
++	uaif0_idle: uaif0-idle-pins {
++		samsung,pins = "gpb0-1", "gpb0-2", "gpb0-3", "gpb0-4";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_INPUT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;
++	};
++
++	uaif1_bus: uaif1-bus-pins {
++		samsung,pins = "gpb1-0", "gpb1-1", "gpb1-2", "gpb1-3";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;
++	};
++
++	uaif1_idle: uaif1-idle-pins {
++		samsung,pins = "gpb1-0", "gpb1-1", "gpb1-2", "gpb1-3";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_INPUT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;
++	};
++};
++
++&abox {
++	memory-region = <&abox_fw_mem>;
++	/* not "default": GPIO_AUD loses its state with pd_aud, the driver reapplies it */
++	pinctrl-names = "active", "idle";
++	pinctrl-0 = <&uaif0_bus &uaif1_bus>;
++	pinctrl-1 = <&uaif0_idle &uaif1_idle>;
++	status = "okay";
++};
++
++&mfc {
++	memory-region = <&mfc_iova>;
++	status = "okay";
++};
++
++&decon {
++	memory-region = <&fb_region>;
++	status = "okay";
++
++	/*
++	 * S6E3FA7 on DSIM0, lit by S-Boot. No reset-gpios or supplies on
++	 * purpose: the driver only sends DCS commands (sleep in/out, display
++	 * off/on, AOR brightness) and never power-cycles the panel.
++	 */
++	panel@0 {
++		compatible = "samsung,s6e3fa7-beyond0";
++		reg = <0>;
++	};
++};
++
++&pinctrl_peric1 {
++	hsi2c38_bus: hsi2c38-bus-pins {
++		samsung,pins = "gph0-6", "gph0-7";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_3>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++		samsung,pin-drv = <0>;
++	};
++
++	spk_amp_reset: spk-amp-reset-pins {
++		samsung,pins = "gph1-1";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++	};
++
++	rcv_amp_reset: rcv-amp-reset-pins {
++		samsung,pins = "gph1-2";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++	};
++
++	/* BCM4773 sensor hub / GNSS (downstream spi_17 = USI16) */
++	spi17_bus: spi17-bus-pins {
++		samsung,pins = "gph0-2", "gph0-1", "gph0-0";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++		samsung,pin-drv = <0>;
++	};
++
++	/* downstream drives this CS as a GPIO too (controller-data cs-gpio) */
++	spi17_cs: spi17-cs-pins {
++		samsung,pins = "gph0-3";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
++		samsung,pin-drv = <0>;
++	};
++};
++
++&pinctrl_peric0 {
++	/* BCM4775: GPS_PWR_EN (nSTDBY), MCU_REQ out, MCU_RESP in */
++	shub_pwr_en: shub-pwr-en-pins {
++		samsung,pins = "gpg0-2";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;
++	};
++
++	shub_mcu_req: shub-mcu-req-pins {
++		samsung,pins = "gpg4-1";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++	};
++
++	shub_mcu_resp: shub-mcu-resp-pins {
++		samsung,pins = "gpg4-2";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_INPUT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++	};
++
++	spi2_bus: spi2-bus-pins {
++		samsung,pins = "gpp0-6", "gpp0-5", "gpp0-4";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++		samsung,pin-drv = <0>;
++	};
++
++	/*
++	 * The controller's automatic CS drops between the address and data
++	 * phases of a madera read in PIO mode (downstream uses manual CS), so
++	 * drive the CS pin as a GPIO.
++	 */
++	spi2_cs: spi2-cs-pins {
++		samsung,pins = "gpp0-7";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
++		samsung,pin-drv = <0>;
++	};
++
++	codec_reset: codec-reset-pins {
++		samsung,pins = "gpg1-0";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++	};
++
++	bt_btwake: bt-btwake-pins {
++		samsung,pins = "gpg2-0";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++	};
++
++	/* USB/DP PHY lane pair select input, as downstream's phy-port */
++	usb_phy_port: usb-phy-port-pins {
++		samsung,pins = "gpg0-4";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_INPUT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
++		samsung,pin-drv = <0>;
++	};
++
++	wlan_en: wlan-en-pins {
++		samsung,pins = "gpg0-5";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++		samsung,pin-drv = <3>;
++	};
++};
++
++/ {
++	wlan_pwr: regulator-wlan {
++		compatible = "regulator-fixed";
++		regulator-name = "wlan_reg_on";
++		gpio = <&gpg0 5 GPIO_ACTIVE_HIGH>;
++		enable-active-high;
++		startup-delay-us = <200000>;
++		pinctrl-names = "default";
++		pinctrl-0 = <&wlan_en>;
++	};
++};
++
++&pcie_wifi {
++	pinctrl-names = "default";
++	pinctrl-0 = <&pcie0_clkreq &pcie0_perst>;
++	reset-gpios = <&gpf2 2 GPIO_ACTIVE_LOW>;
++	vpcie-supply = <&wlan_pwr>;
++	status = "okay";
++};
++
++&usi_uart_bt {
++	samsung,mode = <USI_MODE_UART>;
++	/* without it the BCM4375 never sees our TX; downstream always sets it */
++	samsung,clkreq-on;
++	status = "okay";
++};
++
++&serial1 {
++	pinctrl-names = "default";
++	pinctrl-0 = <&uart1_bus>;
++	status = "okay";
++
++	bluetooth {
++		compatible = "brcm,bcm4375-bt";
++		pinctrl-names = "default";
++		pinctrl-0 = <&bt_en &bt_btwake &bt_hostwake>;
++		shutdown-gpios = <&gpm8 0 GPIO_ACTIVE_HIGH>;
++		device-wakeup-gpios = <&gpg2 0 GPIO_ACTIVE_HIGH>;
++		host-wakeup-gpios = <&gpa2 3 GPIO_ACTIVE_HIGH>;
++		max-speed = <3000000>;
++	};
++};
++
++/* Keep G3D powered as the bootloader leaves it; see the note on &gpu. */
++&pd_embedded_g3d {
++	status = "disabled";
++};
++
++&gpu {
++	status = "okay";
++};
++
++/* CLKOUT0 pad (XCLKOUT) feeds the codec MCLK1; source 1 is the 26 MHz TCXO. */
++&pmu_system_controller {
++	#clock-cells = <1>;
++	clock-names = "clkout1";
++	clocks = <&oscclk>;
++};
++
++&acpm_ipc {
++	pmic-1 {
++		regulators {
++			ldo17m: ldo17m {
++				regulator-name = "vdd_pmic_codec_1p8";
++				regulator-min-microvolt = <1800000>;
++				regulator-max-microvolt = <1800000>;
++				regulator-always-on;
++				regulator-boot-on;
++			};
++
++			ldo18m: ldo18m {
++				regulator-name = "vdd_codec_1p2";
++				regulator-min-microvolt = <1200000>;
++				regulator-max-microvolt = <1200000>;
++				regulator-ramp-delay = <12000>;
++				regulator-enable-ramp-delay = <5000>;
++			};
++
++			/* BCM4775 sensor hub core supply; downstream keeps it on */
++			ldo21m: ldo21m {
++				regulator-name = "vdd_mcu_1p8";
++				regulator-min-microvolt = <1800000>;
++				regulator-max-microvolt = <1800000>;
++				regulator-always-on;
++				regulator-boot-on;
++			};
++		};
++	};
++};
++
++&usi1 {
++	samsung,mode = <USI_MODE_SPI>;
++	status = "okay";
++};
++
++&usi16 {
++	samsung,mode = <USI_MODE_SPI>;
++	status = "okay";
++};
++
++&spi17 {
++	pinctrl-names = "default";
++	pinctrl-0 = <&spi17_bus &spi17_cs>;
++	cs-gpios = <&gph0 3 GPIO_ACTIVE_LOW>;
++	status = "okay";
++
++	/* BCM4775 B0 sensor hub + GNSS (drivers/iio/common/bcm4775_shub) */
++	sensorhub@0 {
++		compatible = "brcm,bcm4775-shub";
++		reg = <0>;
++		spi-max-frequency = <25000000>;
++		spi-cpol;
++		spi-cpha;
++
++		pinctrl-names = "default";
++		pinctrl-0 = <&shub_host_req &shub_ap_sleep &shub_int
++			     &shub_pwr_en &shub_mcu_req &shub_mcu_resp>;
++		vdd-supply = <&ldo21m>;
++		pwr-en-gpios = <&gpg0 2 GPIO_ACTIVE_HIGH>;
++		mcu-req-gpios = <&gpg4 1 GPIO_ACTIVE_HIGH>;
++		mcu-resp-gpios = <&gpg4 2 GPIO_ACTIVE_HIGH>;
++		host-req-gpios = <&gpa1 7 GPIO_ACTIVE_HIGH>;
++		ap-sleep-gpios = <&gpa0 5 GPIO_ACTIVE_HIGH>;
++	};
++};
++
++&spi2 {
++	pinctrl-names = "default";
++	pinctrl-0 = <&spi2_bus &spi2_cs>;
++	cs-gpios = <&gpp0 7 GPIO_ACTIVE_LOW>;
++	status = "okay";
++
++	codec: codec@0 {
++		compatible = "cirrus,cs47l93";
++		reg = <0>;
++		/* downstream runs 25 MHz; start slow until the bus is proven */
++		spi-max-frequency = <5000000>;
++
++		pinctrl-names = "default";
++		pinctrl-0 = <&codec_reset &codec_irq>;
++		reset-gpios = <&gpg1 0 GPIO_ACTIVE_LOW>;
++
++		interrupt-controller;
++		#interrupt-cells = <2>;
++		interrupts-extended = <&gpa2 2 IRQ_TYPE_LEVEL_LOW>;
++
++		gpio-controller;
++		#gpio-cells = <2>;
++		#sound-dai-cells = <1>;
++
++		AVDD-supply = <&ldo17m>;
++		DBVDD1-supply = <&ldo17m>;
++		CPVDD1-supply = <&ldo17m>;
++		CPVDD2-supply = <&ldo18m>;
++		DCVDD-supply = <&ldo18m>;
++
++		clocks = <&pmu_system_controller 0>;
++		clock-names = "mclk1";
++		/* CLKOUT0 resets to source 0 (nothing); source 1 is the TCXO */
++		assigned-clocks = <&pmu_system_controller 0>;
++		assigned-clock-parents = <&oscclk>;
++
++		cirrus,dmic-ref = <0 0 1 1>;
++		cirrus,inmode = <0 0 0 0
++				 0 0 1 1>;
++		cirrus,out-mono = <0 0 0 1 0 0>;
++
++		micvdd {
++			regulator-min-microvolt = <3000000>;
++			regulator-max-microvolt = <3000000>;
++		};
++
++		/*
++		 * The AIF1 pins (GPIO5-8) reset to plain GPIO. Selected by the
++		 * sound card: on the codec node itself the state would also
++		 * claim the Exynos reset/irq pins a second time.
++		 */
++		codec_aif1: pin-settings {
++			aif1-pins {
++				groups = "aif1";
++				function = "aif1";
++				bias-bus-hold;
++			};
++		};
++	};
++};
++
++&usi17_i2c {
++	samsung,mode = <USI_MODE_I2C>;
++	status = "okay";
++};
++
++&hsi2c_38 {
++	clock-frequency = <400000>;
++	pinctrl-names = "default";
++	pinctrl-0 = <&hsi2c38_bus &amp_irq>;
++	status = "okay";
++
++	/*
++	 * Two CS35L40s on one TDM bus (ABOX UAIF1). Boost values: downstream
++	 * never programs them, and the chip reset defaults decode to 1 uH and
++	 * the <=19 uF cap range.
++	 */
++	spk_amp: amplifier@40 {
++		compatible = "cirrus,cs35l40";
++		reg = <0x40>;
++		#sound-dai-cells = <1>;
++		sound-name-prefix = "SPK";
++
++		pinctrl-names = "default";
++		pinctrl-0 = <&spk_amp_reset>;
++		reset-gpios = <&gph1 1 GPIO_ACTIVE_HIGH>;
++		interrupts-extended = <&gpm24 0 IRQ_TYPE_LEVEL_LOW>;
++
++		cirrus,boost-type = <0>;
++		cirrus,boost-peak-milliamp = <4100>;
++		cirrus,boost-ind-nanohenry = <1000>;
++		cirrus,boost-cap-microfarad = <15>;
++		cirrus,asp-sdout-hiz = <3>;
++	};
++
++	rcv_amp: amplifier@41 {
++		compatible = "cirrus,cs35l40";
++		reg = <0x41>;
++		#sound-dai-cells = <1>;
++		sound-name-prefix = "RCV";
++
++		pinctrl-names = "default";
++		pinctrl-0 = <&rcv_amp_reset>;
++		reset-gpios = <&gph1 2 GPIO_ACTIVE_HIGH>;
++		interrupts-extended = <&gpm24 0 IRQ_TYPE_LEVEL_LOW>;
++
++		cirrus,boost-type = <0>;
++		cirrus,boost-peak-milliamp = <4100>;
++		cirrus,boost-ind-nanohenry = <1000>;
++		cirrus,boost-cap-microfarad = <15>;
++		cirrus,asp-sdout-hiz = <3>;
++	};
++};
++
++/ {
++	sound {
++		compatible = "samsung,beyond0lte-madera";
++		pinctrl-names = "default";
++		pinctrl-0 = <&codec_aif1>;
++		samsung,audio-codec = <&codec>;
++		samsung,audio-cpu = <&abox>;
++		/* TDM slot order: earpiece amp on slot 0, loudspeaker amp on slot 1 */
++		samsung,speaker-amps = <&rcv_amp>, <&spk_amp>;
++	};
++};
++
++/ {
++	/*
++	 * The Shannon modem inside the SoC (S5000AP CP): MCU_IPC mailbox
++	 * "mcu_ipc_cp", the AP2CP_CFG register and the modem_if carve-out,
++	 * as the stock mif_pdata/mcu_ipc/shmem nodes describe them.
++	 */
++	modem {
++		compatible = "samsung,exynos9820-cp";
++		reg = <0x0 0x15920000 0x180>, <0x0 0x15020000 0x4>;
++		reg-names = "mailbox", "ap2cp-cfg";
++		interrupts = <GIC_SPI 41 IRQ_TYPE_LEVEL_HIGH>;
++		memory-region = <&modem_if>;
++		samsung,pmu-syscon = <&pmu_system_controller>;
++	};
++};
+diff --git a/dts/upstream/src/arm64/exynos/exynos9820-common.dtsi b/dts/upstream/src/arm64/exynos/exynos9820-common.dtsi
+index 2fef8523..7dbfa556 100644
+--- a/dts/upstream/src/arm64/exynos/exynos9820-common.dtsi
++++ b/dts/upstream/src/arm64/exynos/exynos9820-common.dtsi
+@@ -93,8 +93,10 @@
+ 			no-map;
+ 		};
+ 
+-		framebuffer_region@ca000000 {
++		/* S-Boot's scanout buffer, mapped 1:1 for DECON's SysMMU */
++		fb_region: framebuffer_region@ca000000 {
+ 			reg = <0x0 0xca000000 (1440 * 3040 * 4)>;
++			iommu-addresses = <&decon 0xca000000 (1440 * 3040 * 4)>;
+ 			no-map;
+ 		};
+ 
+@@ -103,7 +105,7 @@
+ 			no-map;
+ 		};
+ 
+-		modem_if@f0000000 {
++		modem_if: modem_if@f0000000 {
+ 			reg = <0x0 0xf0000000 0xb900000>;
+ 			no-map;
+ 		};
+diff --git a/dts/upstream/src/arm64/exynos/exynos9820-tmu.dtsi b/dts/upstream/src/arm64/exynos/exynos9820-tmu.dtsi
+index ecbd426a..c7798a81 100644
+--- a/dts/upstream/src/arm64/exynos/exynos9820-tmu.dtsi
++++ b/dts/upstream/src/arm64/exynos/exynos9820-tmu.dtsi
+@@ -151,6 +151,12 @@
+ 			thermal-sensors = <&tmu_top EXYNOS9820_TMU_TOP_G3D>;
+ 
+ 			trips {
++				g3d_alert: g3d-alert {
++					temperature = <85000>;
++					hysteresis = <5000>;
++					type = "passive";
++				};
++
+ 				g3d_hot: g3d-hot {
+ 					temperature = <100000>;
+ 					hysteresis = <5000>;
+@@ -163,6 +169,13 @@
+ 					type = "critical";
+ 				};
+ 			};
++
++			cooling-maps {
++				map0 {
++					trip = <&g3d_alert>;
++					cooling-device = <&gpu THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
++				};
++			};
+ 		};
+ 
+ 		isp-thermal {
+diff --git a/dts/upstream/src/arm64/exynos/exynos9820.dtsi b/dts/upstream/src/arm64/exynos/exynos9820.dtsi
+index b769dd47..5a0ee941 100644
+--- a/dts/upstream/src/arm64/exynos/exynos9820.dtsi
++++ b/dts/upstream/src/arm64/exynos/exynos9820.dtsi
+@@ -616,6 +616,42 @@
+ 		cpu_on = <0xc4000003>;
+ 	};
+ 
++	/*
++	 * Stock gpu_dvfs_table. ACPM sets the G3D voltage itself for each
++	 * rate (EXYNOS9820_CLK_ACPM_DVFS_G3D), so no opp-microvolt.
++	 */
++	gpu_opp_table: opp-table-gpu {
++		compatible = "operating-points-v2";
++
++		opp-156000000 {
++			opp-hz = /bits/ 64 <156000000>;
++		};
++		opp-200000000 {
++			opp-hz = /bits/ 64 <200000000>;
++		};
++		opp-260000000 {
++			opp-hz = /bits/ 64 <260000000>;
++		};
++		opp-325000000 {
++			opp-hz = /bits/ 64 <325000000>;
++		};
++		opp-377000000 {
++			opp-hz = /bits/ 64 <377000000>;
++		};
++		opp-433000000 {
++			opp-hz = /bits/ 64 <433000000>;
++		};
++		opp-572000000 {
++			opp-hz = /bits/ 64 <572000000>;
++		};
++		opp-650000000 {
++			opp-hz = /bits/ 64 <650000000>;
++		};
++		opp-702000000 {
++			opp-hz = /bits/ 64 <702000000>;
++		};
++	};
++
+ 	soc: soc@0 {
+ 		compatible = "simple-bus";
+ 		#address-cells = <1>;
+@@ -749,6 +785,42 @@
+ 			status = "disabled";
+ 		};
+ 
++		usi1: usi@104700c0 {
++			compatible = "samsung,exynos850-usi";
++			reg = <0x104700c0 0x20>;
++			ranges;
++
++			clock-names = "pclk",
++				      "ipclk";
++			clocks = <&cmu_peric0 CLK_GOUT_PERIC0_USI01_USI_PCLK>,
++				 <&cmu_peric0 CLK_GOUT_PERIC0_USI01_USI_IPCLK>;
++
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			samsung,sysreg = <&sysreg_peric0 0x100c>;
++			status = "disabled";
++
++			spi2: spi@10470000 {
++				compatible = "samsung,exynos850-spi";
++				reg = <0x10470000 0x30>;
++				interrupts = <GIC_SPI 384 IRQ_TYPE_LEVEL_HIGH>;
++
++				clock-names = "spi",
++					      "spi_busclk0";
++				clocks = <&cmu_peric0 CLK_GOUT_PERIC0_USI01_USI_PCLK>,
++					 <&cmu_peric0 CLK_GOUT_PERIC0_USI01_USI_IPCLK>;
++
++				num-cs = <1>;
++				samsung,spi-src-clk = <0>;
++
++				#address-cells = <1>;
++				#size-cells = <0>;
++
++				status = "disabled";
++			};
++		};
++
+ 		usi3: usi@104b00c0 {
+ 			compatible = "samsung,exynos850-usi";
+ 			reg = <0x104b00c0 0x20>;
+@@ -819,6 +891,106 @@
+ 			interrupts = <GIC_SPI 407 IRQ_TYPE_LEVEL_HIGH>;
+ 		};
+ 
++		usi_uart_bt: usi@108400c0 {
++			compatible = "samsung,exynos850-usi";
++			reg = <0x108400c0 0x20>;
++			ranges;
++
++			clock-names = "pclk",
++				      "ipclk";
++			clocks = <&cmu_peric1 CLK_GOUT_PERIC1_UART_BT_PCLK>,
++				 <&cmu_peric1 CLK_GOUT_PERIC1_UART_BT_IPCLK>;
++
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			samsung,sysreg = <&sysreg_peric1 0x1000>;
++			status = "disabled";
++
++			serial1: serial@10840000 {
++				compatible = "samsung,exynos7870-uart",
++					     "samsung,exynos8895-uart";
++				reg = <0x10840000 0xc0>;
++				interrupts = <GIC_SPI 408 IRQ_TYPE_LEVEL_HIGH>;
++
++				clock-names = "uart",
++					      "clk_uart_baud0";
++				clocks = <&cmu_peric1 CLK_GOUT_PERIC1_UART_BT_PCLK>,
++					 <&cmu_peric1 CLK_GOUT_PERIC1_UART_BT_IPCLK>;
++
++				samsung,uart-fifosize = <256>;
++
++				status = "disabled";
++			};
++		};
++		usi16: usi@109700c0 {
++			compatible = "samsung,exynos850-usi";
++			reg = <0x109700c0 0x20>;
++			ranges;
++
++			clock-names = "pclk",
++				      "ipclk";
++			clocks = <&cmu_peric1 CLK_GOUT_PERIC1_USI16_USI_PCLK>,
++				 <&cmu_peric1 CLK_GOUT_PERIC1_USI16_USI_IPCLK>;
++
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			samsung,sysreg = <&sysreg_peric1 0x1048>;
++			status = "disabled";
++
++			spi17: spi@10970000 {
++				compatible = "samsung,exynos850-spi";
++				reg = <0x10970000 0x30>;
++				interrupts = <GIC_SPI 426 IRQ_TYPE_LEVEL_HIGH>;
++
++				clock-names = "spi",
++					      "spi_busclk0";
++				clocks = <&cmu_peric1 CLK_GOUT_PERIC1_USI16_USI_PCLK>,
++					 <&cmu_peric1 CLK_GOUT_PERIC1_USI16_USI_IPCLK>;
++
++				num-cs = <1>;
++				samsung,spi-src-clk = <0>;
++
++				#address-cells = <1>;
++				#size-cells = <0>;
++
++				status = "disabled";
++			};
++		};
++
++		usi17_i2c: usi@109a00c0 {
++			compatible = "samsung,exynos850-usi";
++			reg = <0x109a00c0 0x20>;
++			ranges;
++
++			clock-names = "pclk",
++				      "ipclk";
++			clocks = <&cmu_peric1 CLK_GOUT_PERIC1_USI17_I2C_PCLK>,
++				 <&cmu_peric1 CLK_GOUT_PERIC1_USI17_I2C_IPCLK>;
++
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			samsung,sysreg = <&sysreg_peric1 0x1050>;
++			status = "disabled";
++
++			hsi2c_38: i2c@109a0000 {
++				compatible = "samsung,exynosautov9-hsi2c";
++				reg = <0x109a0000 0xc0>;
++				interrupts = <GIC_SPI 428 IRQ_TYPE_LEVEL_HIGH>;
++
++				clock-names = "hsi2c",
++					      "hsi2c_pclk";
++				clocks = <&cmu_peric1 CLK_GOUT_PERIC1_USI17_I2C_IPCLK>,
++					 <&cmu_peric1 CLK_GOUT_PERIC1_USI17_I2C_PCLK>;
++
++				#address-cells = <1>;
++				#size-cells = <0>;
++				status = "disabled";
++			};
++		};
++
+ 		cmu_fsys0a: clock-controller@10a00000 {
+ 			compatible = "samsung,exynos9820-cmu-fsys0a";
+ 			reg = <0x10a00000 0x10000>;
+@@ -832,15 +1004,28 @@
+ 				 <&cmu_top CLK_DOUT_CMU_FSYS0A_USBDP_DEBUG>;
+ 		};
+ 
++		/*
++		 * USB 2.0 PHY + USB/DP gen2 combo PHY (downstream: phy_version
++		 * 0x301, sub_phy_version 0x400): link/ctrl, PCS, PMA.
++		 */
+ 		usbdrd_phy: phy@10b00000 {
+-			compatible = "samsung,exynos990-usbdrd-phy";
+-			reg = <0x10b00000 0x200>;
++			compatible = "samsung,exynos9820-usbdrd-phy";
++			reg = <0x10b00000 0x200>,
++			      <0x10af0000 0x800>,
++			      <0x10ae0000 0x2800>;
++			reg-names = "phy", "pcs", "pma";
+ 			#phy-cells = <1>;
+ 
+ 			clock-names = "phy",
+-				      "ref";
++				      "ref",
++				      "scl_pclk",
++				      "pcs_pclk",
++				      "pma_ref";
+ 			clocks = <&cmu_fsys0a CLK_GOUT_FSYS0A_USB31DRD_ACLK_PHYCTRL>,
+-				 <&oscclk>;
++				 <&oscclk>,
++				 <&cmu_fsys0a CLK_GOUT_FSYS0A_USB31DRD_I_USBDPPHY_SCL_APB_PCLK>,
++				 <&cmu_fsys0a CLK_GOUT_FSYS0A_USB31DRD_I_USBPCS_APB_CLK>,
++				 <&cmu_fsys0a CLK_GOUT_FSYS0A_USB31DRD_I_USBDPPHY_REF_SOC_PLL>;
+ 
+ 			samsung,pmu-syscon = <&pmu_system_controller>;
+ 
+@@ -865,8 +1050,37 @@
+ 				compatible = "snps,dwc3";
+ 				reg = <0x0 0x10000>;
+ 				interrupts = <GIC_SPI 241 IRQ_TYPE_LEVEL_HIGH>;
+-				phys = <&usbdrd_phy 0>;
+-				phy-names = "usb2-phy";
++				phys = <&usbdrd_phy 0>, <&usbdrd_phy 1>;
++				phy-names = "usb2-phy", "usb3-phy";
++				/*
++				 * Downstream sets "super-speed-plus" but its
++				 * dwc3 core forces LLUCTL.FORCE_GEN1 on this
++				 * DWC_usb31; mainline does the same for host
++				 * mode only with "super-speed".
++				 */
++				maximum-speed = "super-speed";
++				/*
++				 * The combo PHY's LC PLL does not lock while the
++				 * link holds the PIPE in P3; downstream clears
++				 * SUSPHY before every PHY init ("DP altmode
++				 * issue") and re-inits per attach.
++				 */
++				snps,dis_u3_susphy_quirk;
++				/*
++				 * Downstream GUSB3PIPECTL bits for this PHY
++				 * (beyond0 dwc3 node, "defined in MK"): the PCS
++				 * elastic buffer is set up nominal empty
++				 * (skp_remove_th = 1, no init buffering), so
++				 * the link must say so on the PIPE, plus Ux
++				 * exit in Px and U1/U2 exit fail -> Recovery.
++				 * Downstream also sets DISRXDETINP3 (Rx.Detect
++				 * in P2): its "revision >= 2.50a" test is true
++				 * for every DWC_usb31.
++				 */
++				snps,dis_rxdet_inp3_quirk;
++				snps,elastic-buf-mode-quirk;
++				snps,ux-exit-in-px-quirk;
++				snps,u1u2-exitfail-quirk;
+ 			};
+ 		};
+ 
+@@ -920,6 +1134,31 @@
+ 			clocks = <&cmu_fsys1 CLK_GOUT_FSYS1_SYSREG_FSYS1_PCLK>;
+ 		};
+ 
++		/* GEN2 root complex for the Wi-Fi (downstream pcie_0) */
++		pcie_wifi: pcie@13f00000 {
++			compatible = "samsung,exynos9820-pcie";
++			reg = <0x13f00000 0x1000>,
++			      <0x13ed0000 0x1000>,
++			      <0x13ef0000 0x1000>,
++			      <0x13ee0000 0x200>,
++			      <0x14ffe000 0x2000>;
++			reg-names = "dbi", "elbi", "phy", "pcs", "config";
++			#address-cells = <3>;
++			#size-cells = <2>;
++			device_type = "pci";
++			ranges = <0x82000000 0 0x14000000 0x14000000 0 0x00ff0000>;
++			bus-range = <0x00 0xff>;
++			num-lanes = <1>;
++			max-link-speed = <1>;
++			interrupts = <GIC_SPI 253 IRQ_TYPE_LEVEL_HIGH>;
++			#interrupt-cells = <1>;
++			interrupt-map-mask = <0 0 0 0>;
++			interrupt-map = <0 0 0 0 &gic GIC_SPI 253 IRQ_TYPE_LEVEL_HIGH>;
++			samsung,pmu-syscon = <&pmu_system_controller>;
++			samsung,sysreg = <&sysreg_fsys1>;
++			status = "disabled";
++		};
++
+ 		pinctrl_fsys1: pinctrl@13c40000 {
+ 			compatible = "samsung,exynos9820-pinctrl";
+ 			reg = <0x13c40000 0x1000>;
+@@ -1040,6 +1279,7 @@
+ 			reg = <0x15861900 0x20>;
+ 			#power-domain-cells = <0>;
+ 			label = "AUD";
++			samsung,tzpc-base = <0x18c62000>;
+ 		};
+ 
+ 		pd_npu0: power-domain@15861d00 {
+@@ -1141,8 +1381,11 @@
+ 			reg = <0x15862600 0x20>;
+ 			#power-domain-cells = <0>;
+ 			label = "MFC";
++			/* stock need_smc, pm-domains.dtsi */
++			samsung,tzpc-base = <0x18820204>;
+ 		};
+ 
++
+ 		pd_vts: power-domain@15862a80 {
+ 			compatible = "samsung,exynos9820-pd";
+ 			reg = <0x15862a80 0x20>;
+@@ -1253,11 +1496,135 @@
+ 			/* Clock omitted to keep the clock driver simple */
+ 		};
+ 
++		/*
++		 * No power-domains: switching G3D back on needs an EL3 call to
++		 * restore its TZPC, which the mainline PD driver does not make.
++		 * Boards keep pd_embedded_g3d in the state the bootloader left.
++		 * Downstream runs the GPU non-coherent, hence no dma-coherent.
++		 */
++		gpu: gpu@18500000 {
++			compatible = "samsung,exynos9820-mali", "arm,mali-bifrost";
++			reg = <0x18500000 0x5000>;
++			interrupts = <GIC_SPI 288 IRQ_TYPE_LEVEL_HIGH>,
++				     <GIC_SPI 287 IRQ_TYPE_LEVEL_HIGH>,
++				     <GIC_SPI 289 IRQ_TYPE_LEVEL_HIGH>;
++			interrupt-names = "job", "mmu", "gpu";
++			clocks = <&acpm_ipc EXYNOS9820_CLK_ACPM_DVFS_G3D>;
++			operating-points-v2 = <&gpu_opp_table>;
++			#cooling-cells = <2>;
++			status = "disabled";
++		};
++
+ 		pinctrl_aud: pinctrl@18c60000 {
+ 			compatible = "samsung,exynos9820-pinctrl";
+ 			reg = <0x18c60000 0x1000>;
+ 		};
+ 
++		/*
++		 * The ABOX's own IOMMU. The calliope firmware runs from fixed
++		 * IOVAs (DRAM at 0x80000000, VSS at 0xa0000000, ...), so the
++		 * ABOX driver attaches its own domain and maps everything.
++		 */
++		sysmmu_aud: iommu@18e00000 {
++			compatible = "samsung,exynos-sysmmu";
++			reg = <0x18e00000 0x9000>;
++			interrupts = <GIC_SPI 48 IRQ_TYPE_LEVEL_HIGH>;
++			power-domains = <&pd_aud>;
++			/*
++			 * Unreadable until pd_aud has been cycled (TZPC restore),
++			 * so no version probe; its clock gate is CMU_AUD's own.
++			 * Register layout = mainline's v7 non-VM variant (stock
++			 * fault regs 0x70/0x78, PT_BASE_PPN 0x0c).
++			 */
++			samsung,sysmmu-version = <7 0>;
++			#iommu-cells = <0>;
++		};
++
++		abox: audio-controller@18c50000 {
++			compatible = "samsung,exynos9820-abox";
++			/* sysreg: read only with the AUD PLL running (SoC hangs otherwise) */
++			reg = <0x18c50000 0x10000>,
++			      <0x18c00000 0x10000>,
++			      <0x18d00000 0x59000>,
++			      <0x18ce0000 0x10000>,
++			      <0x18c10000 0x10000>,
++			      <0x18cf1000 0x1000>,
++			      <0x18cf2000 0x1004>;
++			reg-names = "sfr", "cmu", "sram", "timer", "sysreg",
++				    "gicd", "gicc";
++			/* the ABOX GIC's output towards the AP */
++			interrupts = <GIC_SPI 46 IRQ_TYPE_EDGE_RISING>;
++			iommus = <&sysmmu_aud>;
++			power-domains = <&pd_aud>;
++			samsung,pmu-syscon = <&pmu_system_controller>;
++			#sound-dai-cells = <1>;
++			status = "disabled";
++		};
++
++		/*
++		 * In pd_mfc, which power-cycles: the driver saves and restores
++		 * the whole CMU. A cold one comes up on OSCCLK, hence the
++		 * assigned parents.
++		 */
++		cmu_mfc: clock-controller@18800000 {
++			compatible = "samsung,exynos9820-cmu-mfc";
++			reg = <0x18800000 0x10000>;
++			#clock-cells = <1>;
++
++			clock-names = "oscclk", "bus", "wfd";
++			clocks = <&oscclk>,
++				 <&cmu_top CLK_DOUT_CMU_MFC_MFC>,
++				 <&cmu_top CLK_DOUT_CMU_MFC_WFD>;
++			assigned-clocks = <&cmu_mfc CLK_MOUT_MFC_MFC_USER>,
++					  <&cmu_mfc CLK_MOUT_MFC_WFD_USER>,
++					  <&cmu_mfc CLK_DOUT_MFC_BUSP>;
++			assigned-clock-parents = <&cmu_top CLK_DOUT_CMU_MFC_MFC>,
++						 <&cmu_top CLK_DOUT_CMU_MFC_WFD>,
++						 <0>;
++			assigned-clock-rates = <0>, <0>, <33333334>;	/* S-Boot: /4 */
++			power-domains = <&pd_mfc>;
++		};
++
++		/*
++		 * The MFC's two SysMMUs (its D0/D1 bus ports). Version 7.3 read
++		 * from 0x34 with the domain on; given here so probe reads
++		 * nothing (the v7 capability offsets are holes). The clock makes
++		 * CMU_MFC resume, and restore itself, before they are programmed.
++		 */
++		sysmmu_mfc0: iommu@18890000 {
++			compatible = "samsung,exynos-sysmmu";
++			reg = <0x18890000 0x9000>;
++			interrupts = <GIC_SPI 343 IRQ_TYPE_LEVEL_HIGH>;
++			clock-names = "sysmmu";
++			clocks = <&cmu_mfc CLK_GOUT_MFC_SYSMMU_MFCD0_CLK>;
++			power-domains = <&pd_mfc>;
++			samsung,sysmmu-version = <7 3>;
++			#iommu-cells = <0>;
++		};
++
++		sysmmu_mfc1: iommu@188b0000 {
++			compatible = "samsung,exynos-sysmmu";
++			reg = <0x188b0000 0x9000>;
++			interrupts = <GIC_SPI 345 IRQ_TYPE_LEVEL_HIGH>;
++			clock-names = "sysmmu";
++			clocks = <&cmu_mfc CLK_GOUT_MFC_SYSMMU_MFCD1_CLK>;
++			power-domains = <&pd_mfc>;
++			samsung,sysmmu-version = <7 3>;
++			#iommu-cells = <0>;
++		};
++
++		/* MFC v13 (ip_ver 0x1300), firmware s5p-mfc-v13.fw */
++		mfc: video-codec@188d0000 {
++			compatible = "samsung,exynos9820-mfc";
++			reg = <0x188d0000 0x10000>;
++			interrupts = <GIC_SPI 338 IRQ_TYPE_LEVEL_HIGH>;
++			clock-names = "mfc";
++			clocks = <&cmu_mfc CLK_GOUT_MFC_MFC_ACLK>;
++			iommus = <&sysmmu_mfc0>, <&sysmmu_mfc1>;
++			power-domains = <&pd_mfc>;
++			status = "disabled";
++		};
++
+ 		cmu_dpu: clock-controller@19000000 {
+ 			compatible = "samsung,exynos9820-cmu-dpu";
+ 			reg = <0x19000000 0x10000>;
+@@ -1270,6 +1637,40 @@
+ 			samsung,sysreg = <&sysreg_dpu>;
+ 		};
+ 
++		/*
++		 * Flip-only takeover of the pipeline S-Boot leaves running:
++		 * no clocks, power domain or IOMMU on purpose (DPU-SPEC.md).
++		 */
++		/*
++		 * SysMMU_DPUD0, in front of the VGRFS and GF0 DMA ports. S-Boot
++		 * leaves it in bypass. Clocked whenever DPU is (its Q-channel is
++		 * held off with CLOCK_REQ set), and it sits in pd_dpu, which
++		 * stays untouched, so no clocks or power domain here.
++		 * Version 7.3 (0x34 reads 0x70600000) is given because the v7
++		 * capability registers are not probed: CAPA at 0x30 is a hole
++		 * on this instance, and a read of a hole resets the SoC.
++		 */
++		sysmmu_dpud0: iommu@190a0000 {
++			compatible = "samsung,exynos-sysmmu";
++			reg = <0x190a0000 0x9000>;
++			interrupts = <GIC_SPI 212 IRQ_TYPE_LEVEL_HIGH>;
++			samsung,sysmmu-version = <7 3>;
++			#iommu-cells = <0>;
++		};
++
++		decon: display-controller@19030000 {
++			compatible = "samsung,exynos9820-decon-handover";
++			reg = <0x19030000 0x10000>,
++			      <0x19071000 0x1000>,
++			      <0x19080000 0x1000>;
++			reg-names = "decon", "idma-gf0", "dsim";
++			interrupts = <GIC_SPI 183 IRQ_TYPE_LEVEL_HIGH>;
++			iommus = <&sysmmu_dpud0>;
++			#address-cells = <1>;
++			#size-cells = <0>;
++			status = "disabled";
++		};
++
+ 		sysreg_dpu: syscon@19010000 {
+ 			compatible = "samsung,exynos9820-dpu-sysreg", "syscon";
+ 			reg = <0x19010000 0x10000>;

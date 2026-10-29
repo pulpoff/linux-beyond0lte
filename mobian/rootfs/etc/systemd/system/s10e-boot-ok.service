@@ -1,0 +1,10 @@
+[Unit]
+Description=S10e: tell the initramfs this boot came up (clears its loop guard)
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/rm -f /var/lib/s10e/boot-attempt
+
+[Install]
+WantedBy=multi-user.target

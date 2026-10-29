@@ -1,0 +1,12 @@
+[Unit]
+Description=Load panfrost if the S10e G3D domain is powered
+Before=phosh.service
+After=systemd-udevd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/s10e-gpu-load
+
+[Install]
+WantedBy=multi-user.target

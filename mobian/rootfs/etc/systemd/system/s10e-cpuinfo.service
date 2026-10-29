@@ -1,0 +1,13 @@
+[Unit]
+Description=Name the S10e SoC in /proc/cpuinfo
+DefaultDependencies=no
+After=local-fs.target
+Before=sysinit.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/s10e-cpuinfo
+
+[Install]
+WantedBy=sysinit.target

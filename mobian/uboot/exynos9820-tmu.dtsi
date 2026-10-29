@@ -1,0 +1,201 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Samsung Exynos 9820 TMU configuration
+ *
+ * Copyright (c) 2026 chiffathefox <chiffathefoxx@gmail.com>
+ */
+
+#include <dt-bindings/thermal/samsung,exynos9820-tmu-top.h>
+#include <dt-bindings/thermal/thermal.h>
+
+/ {
+	thermal-zones {
+		cpucl0-thermal {
+			polling-delay-passive = <50>;
+			polling-delay = <1000>;
+			thermal-sensors = <&tmu_top EXYNOS9820_TMU_TOP_CPUCL0>;
+
+			trips {
+				little_switch_on: little-switch-on {
+					temperature = <75000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+
+				little_mitigate: little-mitigate {
+					temperature = <80000>;
+					hysteresis = <5000>;
+					type = "passive";
+				};
+
+				little_hot: little-hot {
+					temperature = <105000>;
+					hysteresis = <5000>;
+					type = "hot";
+				};
+
+				little_critical: little-critical {
+					temperature = <110000>;
+					hysteresis = <2000>;
+					type = "critical";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&little_mitigate>;
+					cooling-device = <&cpu0 2 THERMAL_NO_LIMIT>,
+							 <&cpu1 2 THERMAL_NO_LIMIT>,
+							 <&cpu2 2 THERMAL_NO_LIMIT>,
+							 <&cpu3 2 THERMAL_NO_LIMIT>;
+				};
+			};
+		};
+
+		cpucl1-thermal {
+			polling-delay-passive = <50>;
+			polling-delay = <1000>;
+			thermal-sensors = <&tmu_top EXYNOS9820_TMU_TOP_CPUCL1>;
+
+			trips {
+				mid_switch_on: mid-switch-on {
+					temperature = <75000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+
+				mid_mitigate: mid-mitigate {
+					temperature = <83000>;
+					hysteresis = <5000>;
+					type = "passive";
+				};
+
+				mid_hot: mid-hot {
+					temperature = <105000>;
+					hysteresis = <5000>;
+					type = "hot";
+				};
+
+				mid_critical: mid-critical {
+					temperature = <110000>;
+					hysteresis = <2000>;
+					type = "critical";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&mid_mitigate>;
+					cooling-device = <&cpu4 2 THERMAL_NO_LIMIT>,
+							 <&cpu5 2 THERMAL_NO_LIMIT>;
+			       };
+			};
+		};
+
+		cpucl2-thermal {
+			polling-delay-passive = <25>;
+			polling-delay = <1000>;
+			thermal-sensors = <&tmu_top EXYNOS9820_TMU_TOP_CPUCL2>;
+
+			trips {
+				big_switch_on: big-switch-on {
+					temperature = <75000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+
+				big_mitigate: big-mitigate {
+					temperature = <83000>;
+					hysteresis = <5000>;
+					type = "passive";
+				};
+
+				big_hotplug: big-hotplug {
+					temperature = <96000>;
+					hysteresis = <5000>;
+					type = "passive";
+				};
+
+				big_hot: big-hot {
+					temperature = <105000>;
+					hysteresis = <5000>;
+					type = "hot";
+				};
+
+				big_critical: big-critical {
+					temperature = <110000>;
+					hysteresis = <2000>;
+					type = "critical";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&big_mitigate>;
+					cooling-device = <&cpu6 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+
+				map1 {
+					trip = <&big_hotplug>;
+					/* TODO: use idle injection instead of downscaling to 520MHz */
+					cooling-device = <&cpu6 18 18>,
+							 <&cpu7 18 18>;
+				};
+			};
+		};
+
+		g3d-thermal {
+			polling-delay-passive = <250>;
+			polling-delay = <5000>;
+			thermal-sensors = <&tmu_top EXYNOS9820_TMU_TOP_G3D>;
+
+			trips {
+				g3d_alert: g3d-alert {
+					temperature = <85000>;
+					hysteresis = <5000>;
+					type = "passive";
+				};
+
+				g3d_hot: g3d-hot {
+					temperature = <100000>;
+					hysteresis = <5000>;
+					type = "hot";
+				};
+
+				g3d_critical: g3d-critical {
+					temperature = <110000>;
+					hysteresis = <2000>;
+					type = "critical";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&g3d_alert>;
+					cooling-device = <&gpu THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+			};
+		};
+
+		isp-thermal {
+			polling-delay-passive = <250>;
+			polling-delay = <5000>;
+			thermal-sensors = <&tmu_top EXYNOS9820_TMU_TOP_ISP>;
+
+			trips {
+				isp_hot: isp-hot {
+					temperature = <100000>;
+					hysteresis = <5000>;
+					type = "hot";
+				};
+
+				isp_critical: isp-critical {
+					temperature = <110000>;
+					hysteresis = <2000>;
+					type = "critical";
+				};
+			};
+		};
+	};
+};

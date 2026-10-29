@@ -1,0 +1,21 @@
+#!/bin/sh
+# S10e: the host often misses the gadget after the switch to Mobian (and after
+# a cable is plugged into a running phone). Whenever a host has been attached
+# for 10 s without "configuring" the UDC, re-plug in software
+# (s10e-usb-reconnect). With the Type-C driver up this only acts while a
+# partner is attached and we are the USB device: in host mode (OTG) and with
+# no cable there is nothing to fix. The state is read every 5 s.
+n=0
+while sleep 5; do
+	P=/sys/class/typec/port0
+	if [ -d $P ]; then
+		if [ ! -d $P-partner ] || ! grep -q '\[device\]' $P/data_role; then
+			n=0; continue
+		fi
+	fi
+	U=$(ls /sys/class/udc 2>/dev/null | head -n1)
+	[ -n "$U" ] || { n=0; continue; }
+	if [ "$(cat /sys/class/udc/$U/state)" = configured ]; then n=0; continue; fi
+	n=$((n + 1))
+	if [ $n -ge 2 ]; then /usr/local/sbin/s10e-usb-reconnect; n=-4; fi
+done
