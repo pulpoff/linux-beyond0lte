@@ -417,6 +417,8 @@
  * into the PMA (0x10ae0000) as used by the downstream CAL
  * (phy-exynos-usbdp-gen2.c), names from phy-exynos-usbdp-gen2-reg.h.
  */
+#define EXYNOS9820_PMA_CMN_A0024		0x0024
+#define CMN_A0024_ANA_AUX_TX_LVL_CTRL		GENMASK(6, 3)
 #define EXYNOS9820_PMA_CMN_A0258		0x0258
 #define EXYNOS9820_PMA_CMN_A0288		0x0288
 #define CMN_A0288_LANE_MUX_SEL_DP		GENMASK(7, 4)
@@ -424,6 +426,17 @@
 #define EXYNOS9820_PMA_CMN_A028C		0x028c
 #define CMN_A028C_OVRD_RX_CDR_DATA_MODE_EXIT	BIT(4)
 #define CMN_A028C_RX_CDR_DATA_MODE_EXIT		BIT(3)
+#define CMN_A028C_DP_TX_LINK_BW			GENMASK(6, 5)
+#define EXYNOS9820_PMA_CMN_A02D0		0x02d0
+#define CMN_A02D0_ROPLL_SSC_EN			BIT(1)
+#define EXYNOS9820_PMA_CMN_A038C		0x038c
+#define CMN_A038C_DP_INIT_RSTN			BIT(3)
+#define CMN_A038C_DP_CMN_RSTN			BIT(2)
+#define CMN_A038C_CDR_WATCHDOG_EN		BIT(1)
+/* per PHY lane: the five TX drive registers, and the serializer clock invert */
+#define EXYNOS9820_PMA_TRSV_DP_DRV(ln)		(0x0810 + (ln) * 0x800)
+#define EXYNOS9820_PMA_TRSV_TXCLK(ln)		(0x0854 + (ln) * 0x800)
+#define TRSV_ANA_TX_SER_TXCLK_INV		BIT(1)
 #define EXYNOS9820_PMA_CMN_A031C		0x031c
 #define EXYNOS9820_PMA_CMN_A0328		0x0328
 #define EXYNOS9820_PMA_CMN_A032C		0x032c
@@ -526,6 +539,8 @@ struct exynos5_usbdrd_phy_drvdata {
 	 */
 	int (*orien_sw_set)(struct typec_switch_dev *sw,
 			    enum typec_orientation orientation);
+	/* a DisplayPort PHY on the same lanes, as phy index 2 (Exynos9820) */
+	const struct phy_ops *dp_phy_ops;
 };
 
 /**
@@ -583,6 +598,13 @@ struct exynos5_usbdrd_phy {
 	bool ss_inited;
 	bool ss_running;
 	bool ss_host;
+
+	/* DisplayPort on the combo PHY (Exynos9820), protected by phy_mutex */
+	struct phy *dp_phy;
+	bool dp_inited;		/* holds the PMU enable and reference clocks */
+	bool dp_on;		/* DP lanes enabled, DP CMN out of reset */
+	unsigned int dp_rate;	/* DP_TX_LINK_BW: 0 RBR, 1 HBR, 2 HBR2 */
+	unsigned int dp_lanes;
 };
 
 static inline
@@ -1220,6 +1242,9 @@ static struct phy *exynos5_usbdrd_phy_xlate(struct device *dev,
 					const struct of_phandle_args *args)
 {
 	struct exynos5_usbdrd_phy *phy_drd = dev_get_drvdata(dev);
+
+	if (args->args[0] == EXYNOS5_DRDPHYS_NUM && phy_drd->dp_phy)
+		return phy_drd->dp_phy;
 
 	if (WARN_ON(args->args[0] >= EXYNOS5_DRDPHYS_NUM))
 		return ERR_PTR(-ENODEV);
@@ -2463,7 +2488,8 @@ static void exynos9820_usbdp_lane_setup(struct exynos5_usbdrd_phy *phy_drd,
 }
 
 /* phy_exynos_usb_v3p1_g2_pma_ready() */
-static void exynos9820_usbdp_pma_ready(struct exynos5_usbdrd_phy *phy_drd)
+static void exynos9820_usbdp_pma_ready(struct exynos5_usbdrd_phy *phy_drd,
+				      bool release_pipe)
 {
 	void __iomem *regs_base = phy_drd->reg_phy;
 	u32 reg;
@@ -2486,11 +2512,17 @@ static void exynos9820_usbdp_pma_ready(struct exynos5_usbdrd_phy *phy_drd)
 	writel(reg, regs_base + EXYNOS850_DRD_SECPMACTL);
 	udelay(1);
 
-	/* release the pipe3 override set in utmi_init */
-	reg = readl(regs_base + EXYNOS850_DRD_LINKCTRL);
-	reg &= ~LINKCTRL_FORCE_PIPE_EN;
-	writel(reg, regs_base + EXYNOS850_DRD_LINKCTRL);
-	udelay(1);
+	/*
+	 * release the pipe3 override set in utmi_init; DP without SS leaves
+	 * it: a USB 2 link that sees an unforced PIPE stops working (-EPROTO
+	 * behind a hub, then "HC died")
+	 */
+	if (release_pipe) {
+		reg = readl(regs_base + EXYNOS850_DRD_LINKCTRL);
+		reg &= ~LINKCTRL_FORCE_PIPE_EN;
+		writel(reg, regs_base + EXYNOS850_DRD_LINKCTRL);
+		udelay(1);
+	}
 
 	/* APB enable */
 	reg = readl(regs_base + EXYNOS850_DRD_SECPMACTL);
@@ -2535,6 +2567,8 @@ static void exynos9820_usbdp_park(struct exynos5_usbdrd_phy *phy_drd)
 	phy_drd->ss_running = false;
 }
 
+static void exynos9820_dp_setup(struct exynos5_usbdrd_phy *phy_drd);
+
 /* exynos_usbdrd_pipe3_init(), called with the PHY clocks on and phy_mutex */
 static void exynos9820_usbdrd_pipe3_init(struct exynos5_usbdrd_phy *phy_drd)
 {
@@ -2555,7 +2589,7 @@ static void exynos9820_usbdrd_pipe3_init(struct exynos5_usbdrd_phy *phy_drd)
 	 * again straight after; downstream re-runs the whole init per attach.
 	 */
 	for (try = 0; try < 2; try++) {
-		exynos9820_usbdp_pma_ready(phy_drd);
+		exynos9820_usbdp_pma_ready(phy_drd, true);
 
 		exynos5_usbdrd_apply_phy_tunes(phy_drd, PTS_PIPE3_PREINIT);
 		exynos9820_usbdp_apply_ss_tune(phy_drd);
@@ -2603,6 +2637,12 @@ static void exynos9820_usbdrd_pipe3_init(struct exynos5_usbdrd_phy *phy_drd)
 
 	phy_drd->ss_port = port;
 	phy_drd->ss_running = true;
+
+	/* the bring-up reset the whole PMA, DP included */
+	if (phy_drd->dp_on) {
+		exynos9820_dp_setup(phy_drd);
+		dev_warn(phy_drd->dev, "DP: PHY re-initialised under the link, it must retrain\n");
+	}
 }
 
 /* PMU isolation of the combo PHY is handled in phy_init/phy_exit */
@@ -2680,7 +2720,9 @@ static int exynos9820_usbdrd_phy_exit(struct phy *phy)
 
 	clk_bulk_disable_unprepare(phy_drd->drv_data->n_clks, phy_drd->clks);
 
-	exynos5_usbdrd_phy_isol(inst, true);
+	/* DisplayPort keeps its own references while it is up */
+	if (!phy_drd->dp_inited)
+		exynos5_usbdrd_phy_isol(inst, true);
 	clk_bulk_disable_unprepare(phy_drd->drv_data->n_core_clks,
 				   phy_drd->core_clks);
 
@@ -2760,6 +2802,305 @@ static int exynos9820_usbdrd_orien_sw_set(struct typec_switch_dev *sw,
 	return 0;
 }
 
+/*
+ * DisplayPort alt mode on the combo PHY (downstream dpu20/cal_9820/
+ * displayport_reg.c). DP takes the lane pair USB is not on: with USB on
+ * lanes 2/3 (ss_port 1) DP lanes 0 and 1 are PHY lanes 0 and 1, otherwise
+ * PHY lanes 3 and 2 (pin assignments D and F: USB keeps SS). Four lanes
+ * (pins C and E) take the SS pair as well, so only without SS running; DP
+ * lanes 2/3 then follow the PCS lane map the link controller programs.
+ * The DP link controller polls the PLL lock and owns everything else.
+ */
+
+/* displayport_reg_phy_init_setting(), EVT1 table */
+static const struct exynos5_usbdrd_phy_tuning exynos9820_tunes_dp_init[] = {
+	PHY_TUNING_ENTRY_PMA(0x0830, -1, 0x07),
+	PHY_TUNING_ENTRY_PMA(0x085c, -1, 0x80),
+	PHY_TUNING_ENTRY_PMA(0x1030, -1, 0x07),
+	PHY_TUNING_ENTRY_PMA(0x105c, -1, 0x80),
+	PHY_TUNING_ENTRY_PMA(0x1830, -1, 0x07),
+	PHY_TUNING_ENTRY_PMA(0x185c, -1, 0x80),
+	PHY_TUNING_ENTRY_PMA(0x2030, -1, 0x07),
+	PHY_TUNING_ENTRY_PMA(0x205c, -1, 0x80),
+	PHY_TUNING_ENTRY_PMA(0x0228, -1, 0x38),
+	PHY_TUNING_ENTRY_PMA(0x0104, -1, 0x44),
+	PHY_TUNING_ENTRY_PMA(0x0248, -1, 0x44),
+	PHY_TUNING_ENTRY_PMA(0x038c, -1, 0x02),
+	PHY_TUNING_ENTRY_PMA(0x0878, -1, 0x04),
+	PHY_TUNING_ENTRY_PMA(0x1878, -1, 0x04),
+	PHY_TUNING_ENTRY_PMA(0x09a4, -1, 0x07),
+	PHY_TUNING_ENTRY_PMA(0x09a8, -1, 0x22),
+	PHY_TUNING_ENTRY_PMA(0x19a4, -1, 0x07),
+	PHY_TUNING_ENTRY_PMA(0x19a8, -1, 0x22),
+	PHY_TUNING_ENTRY_PMA(0x0994, -1, 0x12),
+	PHY_TUNING_ENTRY_PMA(0x1994, -1, 0x12),
+	PHY_TUNING_ENTRY_PMA(0x0998, -1, 0x12),
+	PHY_TUNING_ENTRY_PMA(0x1998, -1, 0x12),
+	PHY_TUNING_ENTRY_PMA(0x099c, -1, 0x48),
+	PHY_TUNING_ENTRY_PMA(0x199c, -1, 0x48),
+	PHY_TUNING_ENTRY_PMA(0x0898, -1, 0x77),
+	PHY_TUNING_ENTRY_PMA(0x1898, -1, 0x77),
+	PHY_TUNING_ENTRY_PMA(0x0054, -1, 0x01),
+	PHY_TUNING_ENTRY_PMA(0x00e0, -1, 0x38),
+	PHY_TUNING_ENTRY_PMA(0x0060, -1, 0x24),
+	PHY_TUNING_ENTRY_PMA(0x0064, -1, 0x77),
+	PHY_TUNING_ENTRY_PMA(0x0070, -1, 0x76),
+	PHY_TUNING_ENTRY_PMA(0x0234, -1, 0xe8),
+	PHY_TUNING_ENTRY_LAST
+};
+
+/* phy_tune_param_default (EVT1): {amp, post, pre, idrv, accdrv} by [swing][pre-emphasis] */
+static const u8 exynos9820_dp_drive[4][4][5] = {
+	{ { 0x21, 0x10, 0x42, 0xe5, 0x60 }, { 0x25, 0x14, 0x42, 0xe5, 0x60 },
+	  { 0x26, 0x17, 0x43, 0xe5, 0x60 }, { 0x2b, 0x1c, 0x43, 0xe7, 0x60 } },
+	{ { 0x26, 0x10, 0x42, 0xe7, 0x60 }, { 0x2b, 0x15, 0x42, 0xe7, 0x60 },
+	  { 0x2b, 0x18, 0x43, 0xe7, 0x60 }, { 0x2b, 0x18, 0x43, 0xe7, 0x60 } },
+	{ { 0x2a, 0x10, 0x42, 0xe7, 0x60 }, { 0x2b, 0x15, 0x43, 0xe7, 0x60 },
+	  { 0x2b, 0x15, 0x43, 0xe7, 0x60 }, { 0x2b, 0x15, 0x43, 0xe7, 0x60 } },
+	{ { 0x2b, 0x10, 0x43, 0xe7, 0x60 }, { 0x2b, 0x10, 0x43, 0xe7, 0x60 },
+	  { 0x2b, 0x10, 0x43, 0xe7, 0x60 }, { 0x2b, 0x10, 0x43, 0xe7, 0x60 } },
+};
+
+/* the USB lane pair: as the running SS bring-up found it, else the GPIO */
+static int exynos9820_dp_usb_port(struct exynos5_usbdrd_phy *phy_drd)
+{
+	return phy_drd->ss_running ? phy_drd->ss_port : exynos9820_usbdp_port(phy_drd);
+}
+
+/* the PHY lane that carries DP lane `lane`: PCS map (0,1,3,2) or (3,2,0,1) */
+static int exynos9820_dp_phy_lane(struct exynos5_usbdrd_phy *phy_drd, int lane)
+{
+	static const u8 map[2][4] = { { 3, 2, 0, 1 }, { 0, 1, 3, 2 } };
+
+	return map[!!exynos9820_dp_usb_port(phy_drd)][lane];
+}
+
+static void exynos9820_dp_reset(struct exynos5_usbdrd_phy *phy_drd, bool assert)
+{
+	void __iomem *pma = phy_drd->reg_pma;
+	u32 reg;
+
+	if (assert) {
+		reg = readl(pma + EXYNOS9820_PMA_CMN_A038C);
+		writel(reg & ~CMN_A038C_DP_CMN_RSTN, pma + EXYNOS9820_PMA_CMN_A038C);
+		return;
+	}
+	writel(CMN_A038C_DP_INIT_RSTN | CMN_A038C_CDR_WATCHDOG_EN,
+	       pma + EXYNOS9820_PMA_CMN_A038C);
+	udelay(1);
+	writel(CMN_A038C_DP_INIT_RSTN | CMN_A038C_DP_CMN_RSTN | CMN_A038C_CDR_WATCHDOG_EN,
+	       pma + EXYNOS9820_PMA_CMN_A038C);
+}
+
+/* phy_set_link_bw() and phy_mode_setting(): rate, serializer clocks, lane mux */
+static void exynos9820_dp_set_mode(struct exynos5_usbdrd_phy *phy_drd)
+{
+	void __iomem *pma = phy_drd->reg_pma;
+	u32 reg, lanes = 0;
+	int ln;
+
+	for (ln = 0; ln < phy_drd->dp_lanes; ln++)
+		lanes |= BIT(exynos9820_dp_phy_lane(phy_drd, ln));
+
+	reg = readl(pma + EXYNOS9820_PMA_CMN_A028C);
+	reg &= ~CMN_A028C_DP_TX_LINK_BW;
+	reg |= FIELD_PREP(CMN_A028C_DP_TX_LINK_BW, phy_drd->dp_rate);
+	writel(reg, pma + EXYNOS9820_PMA_CMN_A028C);
+
+	/* below HBR2 the DP lanes' serializer clock is inverted */
+	for (ln = 0; ln < 4; ln++) {
+		reg = readl(pma + EXYNOS9820_PMA_TRSV_TXCLK(ln));
+		if ((lanes & BIT(ln)) && phy_drd->dp_rate < 2)
+			reg |= TRSV_ANA_TX_SER_TXCLK_INV;
+		else
+			reg &= ~TRSV_ANA_TX_SER_TXCLK_INV;
+		writel(reg, pma + EXYNOS9820_PMA_TRSV_TXCLK(ln));
+	}
+
+	writel(FIELD_PREP(CMN_A0288_LANE_MUX_SEL_DP, lanes) |
+	       FIELD_PREP(CMN_A0288_DP_LANE_EN, lanes),
+	       pma + EXYNOS9820_PMA_CMN_A0288);
+}
+
+/* displayport_reg_phy_init(), less the PLL lock the link controller polls */
+static void exynos9820_dp_setup(struct exynos5_usbdrd_phy *phy_drd)
+{
+	void __iomem *pma = phy_drd->reg_pma;
+	u32 reg;
+
+	exynos9820_dp_reset(phy_drd, true);
+	exynos5_usbdrd_apply_tune_list(phy_drd, exynos9820_tunes_dp_init);
+	reg = readl(pma + EXYNOS9820_PMA_CMN_A0024);
+	reg &= ~CMN_A0024_ANA_AUX_TX_LVL_CTRL;
+	reg |= FIELD_PREP(CMN_A0024_ANA_AUX_TX_LVL_CTRL, 0xd);
+	writel(reg, pma + EXYNOS9820_PMA_CMN_A0024);
+	exynos9820_dp_set_mode(phy_drd);
+	reg = readl(pma + EXYNOS9820_PMA_CMN_A02D0);
+	writel(reg & ~CMN_A02D0_ROPLL_SSC_EN, pma + EXYNOS9820_PMA_CMN_A02D0);
+	exynos9820_dp_reset(phy_drd, false);
+	phy_drd->dp_on = true;
+}
+
+static int exynos9820_dp_phy_init(struct phy *phy)
+{
+	struct exynos5_usbdrd_phy *phy_drd = phy_get_drvdata(phy);
+	struct phy_usb_instance *ss = &phy_drd->phys[EXYNOS5_DRDPHY_PIPE3];
+	int ret;
+
+	ret = clk_bulk_prepare_enable(phy_drd->drv_data->n_core_clks,
+				      phy_drd->core_clks);
+	if (ret)
+		return ret;
+	exynos5_usbdrd_phy_isol(ss, false);
+
+	ret = clk_bulk_prepare_enable(phy_drd->drv_data->n_clks, phy_drd->clks);
+	if (ret) {
+		if (!phy_drd->ss_inited)
+			exynos5_usbdrd_phy_isol(ss, true);
+		clk_bulk_disable_unprepare(phy_drd->drv_data->n_core_clks,
+					   phy_drd->core_clks);
+		return ret;
+	}
+
+	scoped_guard(mutex, &phy_drd->phy_mutex) {
+		/* no USB SS bring-up: the PMA still needs its power-up and common settings */
+		if (!phy_drd->ss_running) {
+			exynos9820_usbdp_pma_ready(phy_drd, false);
+			exynos5_usbdrd_apply_phy_tunes(phy_drd, PTS_PIPE3_PREINIT);
+			exynos9820_usbdp_pma_sw_rst_release(phy_drd);
+		}
+		phy_drd->dp_inited = true;
+		phy_drd->dp_rate = 0;
+		phy_drd->dp_lanes = 2;
+	}
+
+	clk_bulk_disable_unprepare(phy_drd->drv_data->n_clks, phy_drd->clks);
+	return 0;
+}
+
+static int exynos9820_dp_phy_exit(struct phy *phy)
+{
+	struct exynos5_usbdrd_phy *phy_drd = phy_get_drvdata(phy);
+
+	scoped_guard(mutex, &phy_drd->phy_mutex) {
+		phy_drd->dp_inited = false;
+		if (!phy_drd->ss_inited)
+			exynos5_usbdrd_phy_isol(&phy_drd->phys[EXYNOS5_DRDPHY_PIPE3], true);
+	}
+	clk_bulk_disable_unprepare(phy_drd->drv_data->n_core_clks,
+				   phy_drd->core_clks);
+	return 0;
+}
+
+static int exynos9820_dp_phy_power_on(struct phy *phy)
+{
+	struct exynos5_usbdrd_phy *phy_drd = phy_get_drvdata(phy);
+	int ret;
+
+	ret = clk_bulk_prepare_enable(phy_drd->drv_data->n_clks, phy_drd->clks);
+	if (ret)
+		return ret;
+	scoped_guard(mutex, &phy_drd->phy_mutex) {
+		exynos9820_dp_setup(phy_drd);
+		dev_info(phy_drd->dev, "DP: PHY on, %u lanes, DP lane 0 on PHY lane %d\n",
+			 phy_drd->dp_lanes, exynos9820_dp_phy_lane(phy_drd, 0));
+	}
+	clk_bulk_disable_unprepare(phy_drd->drv_data->n_clks, phy_drd->clks);
+	return 0;
+}
+
+static int exynos9820_dp_phy_power_off(struct phy *phy)
+{
+	struct exynos5_usbdrd_phy *phy_drd = phy_get_drvdata(phy);
+	void __iomem *pma = phy_drd->reg_pma;
+	int ret;
+	u32 reg;
+
+	ret = clk_bulk_prepare_enable(phy_drd->drv_data->n_clks, phy_drd->clks);
+	if (ret)
+		return ret;
+	scoped_guard(mutex, &phy_drd->phy_mutex) {
+		exynos9820_dp_reset(phy_drd, true);
+		reg = readl(pma + EXYNOS9820_PMA_CMN_A0288);
+		writel(reg & ~CMN_A0288_DP_LANE_EN, pma + EXYNOS9820_PMA_CMN_A0288);
+		phy_drd->dp_on = false;
+	}
+	clk_bulk_disable_unprepare(phy_drd->drv_data->n_clks, phy_drd->clks);
+	return 0;
+}
+
+/* the link rate (with the DP CMN held in reset around it), and per-lane drive levels */
+static int exynos9820_dp_phy_configure(struct phy *phy, union phy_configure_opts *opts)
+{
+	struct exynos5_usbdrd_phy *phy_drd = phy_get_drvdata(phy);
+	struct phy_configure_opts_dp *dp = &opts->dp;
+	void __iomem *pma = phy_drd->reg_pma;
+	unsigned int rate, lane, i;
+	int ret;
+
+	if (dp->set_lanes && dp->lanes != 2 && dp->lanes != 4)
+		return -EINVAL;
+	if (dp->set_rate) {
+		switch (dp->link_rate) {
+		case 1620:
+			rate = 0;
+			break;
+		case 2700:
+			rate = 1;
+			break;
+		case 5400:
+			rate = 2;
+			break;
+		default:
+			return -EINVAL;
+		}
+	}
+
+	ret = clk_bulk_prepare_enable(phy_drd->drv_data->n_clks, phy_drd->clks);
+	if (ret)
+		return ret;
+	scoped_guard(mutex, &phy_drd->phy_mutex) {
+		if (dp->set_lanes && dp->lanes == 4 && phy_drd->ss_running) {
+			ret = -EBUSY;	/* the SS pair is USB's */
+			break;
+		}
+		if (dp->set_lanes && dp->lanes != phy_drd->dp_lanes) {
+			phy_drd->dp_lanes = dp->lanes;
+			if (!dp->set_rate && phy_drd->dp_on)
+				exynos9820_dp_set_mode(phy_drd);
+		}
+		if (dp->set_rate) {
+			phy_drd->dp_rate = rate;
+			exynos9820_dp_reset(phy_drd, true);
+			exynos9820_dp_set_mode(phy_drd);
+			udelay(60);
+			exynos9820_dp_reset(phy_drd, false);
+		}
+		if (dp->set_voltages) {
+			for (lane = 0; lane < phy_drd->dp_lanes; lane++) {
+				unsigned int sw = min_t(unsigned int, dp->voltage[lane], 3);
+				unsigned int pre = min_t(unsigned int, dp->pre[lane], 3);
+				int ln = exynos9820_dp_phy_lane(phy_drd, lane);
+
+				for (i = 0; i < 5; i++)
+					writel(exynos9820_dp_drive[sw][pre][i],
+					       pma + EXYNOS9820_PMA_TRSV_DP_DRV(ln) + 4 * i);
+			}
+		}
+	}
+	clk_bulk_disable_unprepare(phy_drd->drv_data->n_clks, phy_drd->clks);
+	return ret;
+}
+
+static const struct phy_ops exynos9820_dp_phy_ops = {
+	.init		= exynos9820_dp_phy_init,
+	.exit		= exynos9820_dp_phy_exit,
+	.power_on	= exynos9820_dp_phy_power_on,
+	.power_off	= exynos9820_dp_phy_power_off,
+	.configure	= exynos9820_dp_phy_configure,
+	.owner		= THIS_MODULE,
+};
+
 static const struct phy_ops exynos9820_usbdrd_phy_ops = {
 	.init		= exynos9820_usbdrd_phy_init,
 	.exit		= exynos9820_usbdrd_phy_exit,
@@ -2803,6 +3144,7 @@ static const struct exynos5_usbdrd_phy_drvdata exynos9820_usbdrd_phy = {
 	.regulator_names		= exynos5_regulator_names,
 	.n_regulators			= ARRAY_SIZE(exynos5_regulator_names),
 	.orien_sw_set			= exynos9820_usbdrd_orien_sw_set,
+	.dp_phy_ops			= &exynos9820_dp_phy_ops,
 };
 
 static void
@@ -3752,6 +4094,14 @@ static int exynos5_usbdrd_phy_probe(struct platform_device *pdev)
 		phy_drd->phys[i].pmu_offset = pmu_offset;
 		phy_drd->phys[i].phy_cfg = &drv_data->phy_cfg[i];
 		phy_set_drvdata(phy, &phy_drd->phys[i]);
+	}
+
+	if (drv_data->dp_phy_ops) {
+		phy_drd->dp_phy = devm_phy_create(dev, NULL, drv_data->dp_phy_ops);
+		if (IS_ERR(phy_drd->dp_phy))
+			return dev_err_probe(dev, PTR_ERR(phy_drd->dp_phy),
+					     "Failed to create the DP phy\n");
+		phy_set_drvdata(phy_drd->dp_phy, phy_drd);
 	}
 
 	phy_provider = devm_of_phy_provider_register(dev,

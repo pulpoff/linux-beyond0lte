@@ -3,6 +3,7 @@
 obj-$(CONFIG_DRM_APPLETBDRM)		+= appletbdrm.o
 obj-$(CONFIG_DRM_ARCPGU)		+= arcpgu.o
 obj-$(CONFIG_DRM_EXYNOS9820_DECON_KMS)	+= exynos9820-decon-kms.o
+obj-$(CONFIG_DRM_EXYNOS9820_DP)		+= exynos9820-dp.o
 obj-$(CONFIG_DRM_BOCHS)			+= bochs.o
 obj-$(CONFIG_DRM_CIRRUS_QEMU)		+= cirrus-qemu.o
 obj-$(CONFIG_DRM_GM12U320)		+= gm12u320.o

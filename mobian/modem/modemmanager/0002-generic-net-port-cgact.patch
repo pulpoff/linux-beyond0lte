@@ -1,0 +1,251 @@
+--- a/src/mm-broadband-bearer.c
++++ b/src/mm-broadband-bearer.c
+@@ -36,6 +36,8 @@
+ #include "mm-log-object.h"
+ #include "mm-modem-helpers.h"
+ #include "mm-port-enums-types.h"
++#include "mm-port-net.h"
++#include "mm-kernel-device.h"
+ #include "mm-helper-enums-types.h"
+ 
+ static void async_initable_iface_init (GAsyncInitableIface *iface);
+@@ -404,6 +406,33 @@
+ }
+ 
+ /*****************************************************************************/
++/* Net-port modems driven by plain 3GPP commands
++ *
++ * Some modems expose an AT port and a raw-IP net port but no QMI/MBIM control
++ * channel (e.g. a shared-memory CP whose own IPC is bridged to AT). The generic
++ * logic can't use their net port and would dial PPP on the AT port instead.
++ * When the net port carries the udev property ID_MM_NET_CGACT=1, connect with
++ * +CGACT=1,<cid> on the primary port, take the static IP settings from
++ * +CGCONTRDP=<cid>, and disconnect with +CGACT=0,<cid>.
++ */
++
++static MMPort *
++peek_cgact_net_port (MMBaseModem *modem)
++{
++    MMPort         *net;
++    MMKernelDevice *kernel_device;
++
++    net = mm_base_modem_peek_best_data_port (modem, MM_PORT_TYPE_NET);
++    if (!net)
++        return NULL;
++    kernel_device = mm_port_peek_kernel_device (net);
++    if (!kernel_device ||
++        !mm_kernel_device_get_global_property_as_boolean (kernel_device, "ID_MM_NET_CGACT"))
++        return NULL;
++    return net;
++}
++
++/*****************************************************************************/
+ /* 3GPP Dialing (sub-step of the 3GPP Connection sequence) */
+ 
+ typedef struct {
+@@ -412,6 +441,7 @@
+     GError *saved_error;
+     MMPortSerialAt *dial_port;
+     gboolean close_dial_port_on_exit;
++    MMPort *net;
+ } Dial3gppContext;
+ 
+ static void
+@@ -421,6 +451,7 @@
+         g_error_free (ctx->saved_error);
+     if (ctx->dial_port)
+         g_object_unref (ctx->dial_port);
++    g_clear_object (&ctx->net);
+     g_object_unref (ctx->primary);
+     g_object_unref (ctx->modem);
+     g_slice_free (Dial3gppContext, ctx);
+@@ -530,6 +561,26 @@
+ }
+ 
+ static void
++cgact_net_ready (MMBaseModem  *modem,
++                 GAsyncResult *res,
++                 GTask        *task)
++{
++    Dial3gppContext *ctx;
++    GError          *error = NULL;
++
++    ctx = g_task_get_task_data (task);
++
++    if (!mm_base_modem_at_command_full_finish (modem, res, &error)) {
++        g_task_return_error (task, error);
++        g_object_unref (task);
++        return;
++    }
++
++    g_task_return_pointer (task, g_object_ref (ctx->net), g_object_unref);
++    g_object_unref (task);
++}
++
++static void
+ dial_3gpp (MMBroadbandBearer *self,
+            MMBaseModem *modem,
+            MMPortSerialAt *primary,
+@@ -552,6 +603,23 @@
+     task = g_task_new (self, cancellable, callback, user_data);
+     g_task_set_task_data (task, ctx, (GDestroyNotify)dial_3gpp_context_free);
+ 
++    if ((ctx->net = peek_cgact_net_port (modem)) != NULL) {
++        g_object_ref (ctx->net);
++        mm_obj_dbg (self, "connecting through net port %s with +CGACT", mm_port_get_device (ctx->net));
++        command = g_strdup_printf ("+CGACT=1,%u", cid);
++        mm_base_modem_at_command_full (ctx->modem,
++                                       MM_IFACE_PORT_AT (ctx->primary),
++                                       command,
++                                       MM_BASE_BEARER_DEFAULT_CONNECTION_TIMEOUT,
++                                       FALSE,
++                                       FALSE, /* raw */
++                                       NULL, /* cancellable */
++                                       (GAsyncReadyCallback)cgact_net_ready,
++                                       task);
++        g_free (command);
++        return;
++    }
++
+     /* Grab dial port. This gets a reference to the dial port and OPENs it.
+      * If we fail, we'll need to close it ourselves. */
+     ctx->dial_port = common_get_at_data_port (self, ctx->modem, &error);
+@@ -727,6 +795,70 @@
+ }
+ 
+ static void
++cgcontrdp_net_ready (MMBaseModem  *modem,
++                     GAsyncResult *res,
++                     GTask        *task)
++{
++    MMBroadbandBearer                *self;
++    DetailedConnectContext           *ctx;
++    const gchar                      *response;
++    GError                           *error = NULL;
++    g_autofree gchar                 *address = NULL;
++    g_autofree gchar                 *subnet = NULL;
++    g_autofree gchar                 *gateway = NULL;
++    g_autofree gchar                 *dns1 = NULL;
++    g_autofree gchar                 *dns2 = NULL;
++    const gchar                      *dns[3] = { NULL, NULL, NULL };
++    guint                             n = 0;
++    g_autoptr(MMBearerConnectResult)  result = NULL;
++    g_autoptr(MMBearerIpConfig)       ipv4_config = NULL;
++    g_autoptr(MMBearerIpConfig)       ipv6_config = NULL;
++
++    self = g_task_get_source_object (task);
++    ctx = g_task_get_task_data (task);
++
++    response = mm_base_modem_at_command_full_finish (modem, res, &error);
++    if (!response ||
++        !mm_3gpp_parse_cgcontrdp_response (response, NULL, NULL, NULL, &address, &subnet,
++                                           &gateway, &dns1, &dns2, &error)) {
++        mm_obj_warn (self, "no static IP settings, falling back to DHCP: %s", error->message);
++        g_clear_error (&error);
++    }
++
++    if (ctx->ip_family & (MM_BEARER_IP_FAMILY_IPV4 | MM_BEARER_IP_FAMILY_IPV4V6)) {
++        ipv4_config = mm_bearer_ip_config_new ();
++        if (address) {
++            mm_bearer_ip_config_set_method (ipv4_config, MM_BEARER_IP_METHOD_STATIC);
++            mm_bearer_ip_config_set_address (ipv4_config, address);
++            mm_bearer_ip_config_set_prefix (ipv4_config, subnet ? mm_netmask_to_cidr (subnet) : 32);
++            if (gateway && !g_str_equal (gateway, "0.0.0.0"))
++                mm_bearer_ip_config_set_gateway (ipv4_config, gateway);
++            if (dns1 && !g_str_equal (dns1, "0.0.0.0"))
++                dns[n++] = dns1;
++            if (dns2 && !g_str_equal (dns2, "0.0.0.0"))
++                dns[n++] = dns2;
++            if (n)
++                mm_bearer_ip_config_set_dns (ipv4_config, dns);
++        } else
++            mm_bearer_ip_config_set_method (ipv4_config, MM_BEARER_IP_METHOD_DHCP);
++    }
++    if (ctx->ip_family & (MM_BEARER_IP_FAMILY_IPV6 | MM_BEARER_IP_FAMILY_IPV4V6)) {
++        /* the network's router advertisements configure IPv6 */
++        ipv6_config = mm_bearer_ip_config_new ();
++        mm_bearer_ip_config_set_method (ipv6_config, MM_BEARER_IP_METHOD_DHCP);
++    }
++    if (!ipv4_config && !ipv6_config) {
++        ipv4_config = mm_bearer_ip_config_new ();
++        mm_bearer_ip_config_set_method (ipv4_config, MM_BEARER_IP_METHOD_DHCP);
++    }
++
++    result = mm_bearer_connect_result_new (ctx->data, ipv4_config, ipv6_config);
++    mm_bearer_connect_result_set_profile_id (result, self->priv->profile_id);
++    g_task_return_pointer (task, g_steal_pointer (&result), (GDestroyNotify)mm_bearer_connect_result_unref);
++    g_object_unref (task);
++}
++
++static void
+ dial_3gpp_ready (MMBroadbandBearer *self,
+                  GAsyncResult      *res,
+                  GTask             *task)
+@@ -770,6 +902,22 @@
+         return;
+     }
+ 
++    if (MM_IS_PORT_NET (ctx->data) && peek_cgact_net_port (ctx->modem) == ctx->data) {
++        g_autofree gchar *command = NULL;
++
++        command = g_strdup_printf ("+CGCONTRDP=%d", self->priv->profile_id);
++        mm_base_modem_at_command_full (ctx->modem,
++                                       MM_IFACE_PORT_AT (ctx->primary),
++                                       command,
++                                       10,
++                                       FALSE,
++                                       FALSE, /* raw */
++                                       NULL, /* cancellable */
++                                       (GAsyncReadyCallback)cgcontrdp_net_ready,
++                                       task);
++        return;
++    }
++
+     /* Yuhu! */
+ 
+     /* Keep port open during connection */
+@@ -1406,6 +1554,20 @@
+ }
+ 
+ static void
++cgact_net_disconnect_ready (MMBaseModem  *modem,
++                            GAsyncResult *res,
++                            GTask        *task)
++{
++    GError *error = NULL;
++
++    if (!mm_base_modem_at_command_full_finish (modem, res, &error))
++        g_task_return_error (task, error);
++    else
++        g_task_return_boolean (task, TRUE);
++    g_object_unref (task);
++}
++
++static void
+ disconnect_3gpp (MMBroadbandBearer *self,
+                  MMBroadbandModem *modem,
+                  MMPortSerialAt *primary,
+@@ -1420,6 +1582,23 @@
+ 
+     g_assert (primary != NULL);
+ 
++    if (MM_IS_PORT_NET (data)) {
++        g_autofree gchar *command = NULL;
++
++        task = g_task_new (self, NULL, callback, user_data);
++        command = (cid > 0 ? g_strdup_printf ("+CGACT=0,%d", cid) : g_strdup ("+CGACT=0"));
++        mm_base_modem_at_command_full (MM_BASE_MODEM (modem),
++                                       MM_IFACE_PORT_AT (primary),
++                                       command,
++                                       45,
++                                       FALSE,
++                                       FALSE, /* raw */
++                                       NULL, /* cancellable */
++                                       (GAsyncReadyCallback)cgact_net_disconnect_ready,
++                                       task);
++        return;
++    }
++
+     /* Generic 3GPP plays only with SERIAL data ports */
+     g_assert (MM_IS_PORT_SERIAL (data));
+ 

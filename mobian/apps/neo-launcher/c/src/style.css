@@ -1,0 +1,38 @@
+/* Neo Launcher on Phosh (GTK 3): Launcher3-like home over the wallpaper, dark drawer */
+window.neo { background: transparent; }
+.neo-home { padding: 8px 6px 10px 6px; background: transparent; }
+.neo-page { margin: 6px 0; }
+button.neo-cell { padding: 4px 2px; border-radius: 16px; min-width: 0; min-height: 0; border: none; box-shadow: none;
+                  background: transparent; }
+button.neo-cell:active { background: alpha(white, 0.12); }
+/* held: about to move (moving icons, neo-home.c) */
+button.neo-cell.neo-lifted { background: alpha(white, 0.20); }
+.neo-floating { -gtk-icon-shadow: 0 6px 12px alpha(black, 0.5); }
+.neo-label { color: white; font-size: 13px; font-weight: bold; text-shadow: 0 1px 2px alpha(black, 0.8); }
+/* the drawer's labels: grey on its dark grey, as One UI */
+.neo-drawer .neo-label { color: #d6d6d6; text-shadow: none; }
+.neo-dots { margin: 2px 0 6px 0; }
+.neo-dock { padding: 8px 4px; margin: 0 6px; }
+/* landscape: the dock is a column at the right edge */
+.neo-landscape .neo-home { padding: 4px 6px 4px 10px; }
+.neo-landscape .neo-page { margin: 2px 0; }
+.neo-landscape .neo-dock { padding: 4px 8px; margin: 4px 0 4px 8px; }
+.neo-drawer { background: #212121; padding: 10px 8px 0 8px; border-radius: 24px 24px 0 0; }
+.neo-search { margin: 6px 6px 14px 6px; min-height: 52px; border-radius: 18px; border: none; box-shadow: none;
+              background: #3a3a3a; color: white; caret-color: white; }
+.neo-search image { color: #3e8ef7; }
+.neo-search image.right { color: #3e8ef7; }
+.neo-drawer-grid { padding-bottom: 24px; }
+.neo-drawer-grid flowboxchild { padding: 6px 0; }
+.neo-menu { padding: 4px; }
+button.neo-menu-item { padding: 10px 14px; min-width: 200px; }
+/* the widgets (neo-widgets.c): the weather and the clock, like One UI's */
+button.neo-widget { padding: 4px 8px; border: none; box-shadow: none; background: transparent; min-height: 0; }
+button.neo-widget:active { background: alpha(white, 0.10); border-radius: 16px; }
+.neo-weather-icon { color: white; -gtk-icon-shadow: 0 1px 3px alpha(black, 0.6); }
+.neo-landscape .neo-weather-temp { font-size: 22px; }
+.neo-weather-temp { color: white; font-size: 28px; font-weight: bold; text-shadow: 0 1px 3px alpha(black, 0.7); }
+.neo-weather-place { color: white; font-size: 13px; font-weight: bold; text-shadow: 0 1px 2px alpha(black, 0.8);
+                     -gtk-icon-shadow: 0 1px 2px alpha(black, 0.8); }
+/* an app's launch: a card grows from its icon to the whole screen until the app's window is up */
+.neo-launch-card { background: #1c1f22; border-radius: 22px; }

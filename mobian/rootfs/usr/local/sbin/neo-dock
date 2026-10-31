@@ -1,0 +1,14 @@
+#!/bin/sh
+# Docked to an external display: GNOME desktop. Undocked: Phosh.
+# Run from neo-dock.service (udev DRM hotplug, and once at boot).
+[ -e /run/neo-dock.off ] && exit 0
+sleep 2	# let the alt mode settle; a replug flaps for a second
+state=disconnected
+for f in /sys/class/drm/card*-DP-*/status; do
+	[ -r "$f" ] && [ "$(cat "$f")" = connected ] && state=connected
+done
+if [ "$state" = connected ]; then
+	systemctl is-active -q gnome-desktop.service || systemctl start gnome-desktop.service
+else
+	systemctl is-active -q phosh.service || systemctl start phosh.service
+fi

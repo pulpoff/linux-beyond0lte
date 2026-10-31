@@ -35,6 +35,7 @@ def log(*a):
 
 
 class Rfs:
+    sim_event = 0                   # time of the last SIM tray event (insert/remove)
     def __init__(self, fd, state, quiet):
         self.fd, self.quiet = fd, quiet
         self.root = os.path.join(state, 'rfs')
@@ -120,6 +121,8 @@ class Rfs:
                 return
             self.files[fd] = name
             log('rfs: open %s flags %#x -> fd %d' % (name, flags, fd))
+            if name.endswith('simdetetct_count.dat'):  # (sic) the CP counts tray events here
+                self.sim_event = time.time()
             self.reply(idx, rid, fd)
         elif idx in (RFS_READ, RFS_WRITE, RFS_LSEEK, RFS_CLOSE):
             fd = struct.unpack_from('<i', d)[0]
@@ -294,6 +297,10 @@ class Atd:
         self.st = dict(cs=(1, 0xff, 0, 0), ps=(1, 0xff, 0, 0), plmn='', name='', rssi=None,
                        sim=None, imei='', imsi='', version='', smsc=b'')
         self.calls = {}                 # id -> (term, status, number)
+        self.sim_gone = 0               # time the ready SIM went absent
+        self.ctx = {}                   # cid -> APN, from +CGDCONT
+        self.pdp = {}                   # cid -> GPRS 0d:09 IP config of an active context
+        self.act_wait = None            # (cid, deadline, then) while 0d:04 waits for 0d:10
         self.audio = False              # CP voice path + AP call audio up
         self.ring_until = 0
         self.sms_wait = 0               # deadline for the network's verdict on +CMGS
@@ -358,6 +365,18 @@ class Atd:
             return '%d,"%04X","%08X",%d' % (s, lac, cid, self.act_at(act))
         return '%d' % s
 
+    def reg_update(self, key, val):
+        old, self.st[key] = self.st[key], val
+        if old == val:
+            return
+        if key == 'cs' and self.creg:
+            self.urc('+CREG: ' + self.reg_txt('cs', self.creg))
+        if key == 'ps':
+            if self.cgreg:
+                self.urc('+CGREG: ' + self.reg_txt('ps', self.cgreg))
+            if self.cereg:
+                self.urc('+CEREG: ' + self.reg_txt('ps', self.cereg))
+
     # SIM file access (SEC_RSIM_ACCESS), in the layout rild uses on this modem:
     # cmd, 0, aid_len, aid[16], fid le16, path count, path le16[5], 0, 0, p1, p2, p3
     USIM_AID = bytes.fromhex('a0000000871002f230ff018907020000')
@@ -380,7 +399,7 @@ class Atd:
         stays unregistered or limited (state 7) do we set one, per SIM, and
         walk the candidates 30 s apart. Data is a separate step after this."""
         st, now = self.st, time.time()
-        if any(st[k][0] in (1, 5) for k in ('cs', 'ps')):
+        if any(self.stat_at(st[k][0]) in (1, 5) for k in ('cs', 'ps')):     # registered
             self.apn_at = now + 30
             return
         if not st['imsi'] or self.calls:
@@ -420,17 +439,9 @@ class Atd:
         elif (g, i) == (0x08, 0x05) and len(d) >= 10:
             act, dom, stat = d[0], d[1], d[2]
             lac, cid = struct.unpack_from('<HI', d, 4)
-            key = 'ps' if dom == 3 else 'cs'
-            old = st[key]
-            st[key] = (stat, act, lac, cid)
-            if old != st[key]:
-                if key == 'cs' and self.creg:
-                    self.urc('+CREG: ' + self.reg_txt('cs', self.creg))
-                if key == 'ps':
-                    if self.cgreg:
-                        self.urc('+CGREG: ' + self.reg_txt('ps', self.cgreg))
-                    if self.cereg:
-                        self.urc('+CEREG: ' + self.reg_txt('ps', self.cereg))
+            # domain 2 = CS, 3 = PS, 1 = both (an LTE combined attach reports only this one)
+            for key in (('cs', 'ps') if dom == 1 else ('ps',) if dom == 3 else ('cs',)):
+                self.reg_update(key, (stat, act, lac, cid))
         elif (g, i) == (0x04, 0x01) and t == SET and len(d) >= 4 and self.sms_wait:
             self.sms_done(struct.unpack_from('<H', d, 1)[0], d[3])
         elif (g, i) == (0x08, 0x03) and len(d) >= 9:
@@ -440,11 +451,18 @@ class Atd:
         elif (g, i) == (0x07, 0x06) and d:
             st['rssi'] = d[0]
         elif (g, i) == (0x05, 0x01) and d:
+            if d[0] == 0x80 and st['imsi'] and not self.sim_gone:
+                log('SIM removed after it was ready: modem restart pending')
+                self.sim_gone = time.time()
             st['sim'] = d[0]
             if d[0] in (0x00, 0x82, 0x83) and not st['imsi'] and not self.pending_rsim:
                 self.load_imsi()
             if d[0] in (0x00, 0x82, 0x83) and not st['smsc']:
                 self.ipc.send(0x04, 0x0a, GET)      # fails (0x8003) until the SIM is up
+        elif (g, i) == (0x0d, 0x09) and d:
+            self.pdp[d[0]] = d          # IP config: the context is up (0d:10 follows)
+        elif (g, i) == (0x0d, 0x10) and len(d) >= 3:
+            self.pdp_state(d[0], d[1], d[2])
         elif (g, i) == (0x0a, 0x01) and len(d) > 2:
             st['version'] = d[1:33].split(b'\0')[0].decode(errors='replace')
         elif (g, i) == (0x0a, 0x02) and len(d) > 1:
@@ -483,6 +501,9 @@ class Atd:
 
     def tick(self):
         self.apn_tick()
+        if self.act_wait and time.time() > self.act_wait[2]:
+            self.act_wait = None
+            self.final(False, 148)
         if self.sms_wait and time.time() > self.sms_wait:
             self.sms_done(0xffff, 0)
         now = time.time()
@@ -586,8 +607,11 @@ class Atd:
         elif name == '+CPIN':
             if test:
                 pass
-            elif st['sim'] in (0x00, 0x82, 0x83):
+            elif st['sim'] in (0x00, 0x82, 0x83) and st['imsi']:
                 info('+CPIN: READY')
+            elif st['sim'] in (0x00, 0x82, 0x83):
+                self.final(False, 14)       # SIM busy until the IMSI is read: ModemManager then waits,
+                return False                # and its SIM object (operator id) is this card's
             elif st['sim'] == 0x03:
                 info('+CPIN: SIM PIN')
             elif st['sim'] == 0x80:
@@ -741,12 +765,99 @@ class Atd:
         elif name == '+CLCK':
             if '2' in arg.split(',')[1:2]:
                 info('+CLCK: 0')
-        elif name in ('+CGDCONT', '+CGACT', '+CGATT'):
-            if q and name == '+CGATT':
+        elif name == '+CGDCONT':
+            if test:
+                # one context: rmnet0 is SIPC channel 10 = cid 1; the CP refuses others (0x8001)
+                for t in ('IP', 'IPV6', 'IPV4V6'):
+                    info('+CGDCONT: (1-1),"%s",,,(0-2),(0-4)' % t)
+            elif q:
+                for cid, apn in sorted(self.ctx.items()):
+                    info('+CGDCONT: %d,"IPV4V6","%s","",0,0' % (cid, apn))
+            elif arg:
+                w = [x.strip().strip('"') for x in arg.split(',')]
+                if not w[0].isdigit() or int(w[0]) != 1:
+                    self.final(False, 4)
+                    return False
+                if len(w) >= 3:
+                    self.ctx[int(w[0])] = w[2]
+                else:
+                    self.ctx.pop(int(w[0]), None)
+        elif name == '+CGACT':
+            if test:
+                info('+CGACT: (0,1)')
+            elif q:
+                for cid in sorted(self.ctx):
+                    info('+CGACT: %d,%d' % (cid, 1 if cid in self.pdp else 0))
+            else:
+                w = [int(x) for x in arg.split(',') if x.strip()]
+                cids = w[1:] or sorted(self.ctx)
+                if not w or len(cids) != 1:
+                    self.final(False, 4)
+                    return False
+                return self.pdp_act(cids[0], w[0] == 1)
+        elif name == '+CGCONTRDP':
+            for cid in ([int(arg)] if arg and not test else sorted(self.pdp)):
+                c = self.pdp_cfg(cid)
+                if c:
+                    info('+CGCONTRDP: %d,5,"%s","%s.255.255.255.255","%s","%s","%s"' % (
+                        cid, self.ctx.get(cid, ''), c['ip'], c['ip'], c['dns'][0], c['dns'][1]))
+        elif name == '+CGPADDR':
+            for cid in ([int(arg)] if arg and not test else sorted(self.pdp)):
+                c = self.pdp_cfg(cid)
+                if c:
+                    info('+CGPADDR: %d,"%s"' % (cid, c['ip']))
+        elif name == '+CGATT':
+            if q:
                 info('+CGATT: %d' % (1 if self.stat_at(st['ps'][0]) in (1, 5) else 0))
         else:
             self.final(False, 4)
             return False
+
+    # --- packet data: GPRS 0d:01 define + 0d:04 activate, as rild does (kit/modem/private/rild-1and1.*)
+    def pdp_cfg(self, cid):
+        """the 0d:09 IP config of an active context: u8 cid, u8 flags, ?, IPv4 @3, DNS @7/@11,
+        IPv6 @35, IPv6 DNS @99/@115, MTU le16 @152"""
+        d = self.pdp.get(cid)
+        if not d or len(d) < 15:
+            return None
+        ip = lambda b: '.'.join(map(str, b))
+        mtu = struct.unpack_from('<H', d, 152)[0] if len(d) >= 154 else 0
+        return dict(ip=ip(d[3:7]), dns=(ip(d[7:11]), ip(d[11:15])), mtu=mtu or 1500)
+
+    def pdp_act(self, cid, on):
+        apn = self.ctx.get(cid)
+        if on and cid in self.pdp:
+            return None                 # already up
+        if on and apn is None:
+            self.final(False, 4)
+            return False
+        if on:
+            self.ipc.send(0x0d, 0x01, SET, bytes([cid, 1, 6]) + apn.encode()[:99].ljust(100, b'\0') + bytes(39))
+            m = self.ipc.send(0x0d, 0x04, SET, bytes([cid, 1, 0x10]) + bytes(99) + b'\x01\x00\x00')
+        else:
+            m = self.ipc.send(0x0d, 0x04, SET, bytes([cid, 0, 0x10]) + bytes(99) + b'\x01\x00\x00')
+
+        def res(code):
+            if code != 0x8000:
+                self.act_wait = None
+                return self.final(False, 148 if on else 149)
+        self.pending[m] = res
+        self.act_wait = (cid, on, time.time() + 30)
+        return False
+
+    def pdp_state(self, cid, state, cause):
+        """0d:10: u8 cid, u8 state (1 = active), u8 cause"""
+        log('PDP cid %d state %d cause %#x' % (cid, state, cause))
+        if cid == 0 and self.act_wait:  # a deactivation is reported as cid 0, state 3
+            cid = self.act_wait[0]
+        if state != 1:
+            self.pdp.pop(cid, None)
+        w = self.act_wait
+        if w and w[0] == cid:
+            self.act_wait = None
+            self.final((state == 1) == w[1], 148 if w[1] else 149)
+        elif state != 1:
+            self.urc('+CGEV: NW PDN DEACT %d' % cid)
 
     # --- actions
     def wait_res(self, mseq, then=None):
@@ -804,6 +915,8 @@ class Atd:
     def dial(self, s):
         num = s.rstrip(';').strip()
         digits = num.lstrip('+')
+        if digits.startswith(('*99', '*98')):  # a PPP data dial (ModemManager's ATD*99***<cid>#): never a call
+            return self.out('\r\nNO CARRIER\r\n')
         if not digits or not all(c in '0123456789*#' for c in digits):
             return self.final(False)
         data = bytes([0, 1, 0, len(digits), 0x11 if num.startswith('+') else 0]) + digits.encode()
@@ -861,6 +974,11 @@ POWER_ON = [
 
 
 
+# the provider DB is wrong for these: 26223 (1&1 / PremiumSIM / Drillisch brands) is listed under
+# Vodafone with web.vodafone.de; its own APN, and what Android's rild sent, is "internet"
+APN_FIX = {'26223': 'internet'}
+
+
 def sim_apns(state, imsi):
     """Initial-attach APN candidates for this SIM, best first: the override in
     <state>/apn, the provider DB's internet APN for the SIM's MCC+MNC (2- then
@@ -871,6 +989,8 @@ def sim_apns(state, imsi):
         out.append(open(os.path.join(state, 'apn')).read().strip())
     except OSError:
         pass
+    if imsi[:5] in APN_FIX:
+        out.append(APN_FIX[imsi[:5]])
     try:
         import xml.etree.ElementTree as ET
         root = ET.parse('/usr/share/mobile-broadband-provider-info/serviceproviders.xml').getroot()
@@ -961,6 +1081,12 @@ def main():
                                   bytes.fromhex(''.join(w[3:])))
         if at:
             at.tick()
+        # A swapped SIM is never read again by a running CP (Android restarts the radio too): re-boot it
+        # through the unit's Restart=always once the tray has been quiet for 5 s, never during a call.
+        ev = max(rfs.sim_event, at.sim_gone if at else 0)
+        if ev and time.time() - ev > 5 and not (at and at.calls):
+            log('SIM changed: exiting so the CP is re-booted with the new card')
+            return 0
         if todo and time.time() >= next_tx:
             ipc0.send(*todo.pop(0))
             next_tx = time.time() + 0.1

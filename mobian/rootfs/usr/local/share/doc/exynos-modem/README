@@ -1,0 +1,12 @@
+Exynos 9820 (S10e) modem on Mobian
+==================================
+exynos9820-cp.ko   kernel driver: CP power/boot, mailbox, shared-memory link;
+                   /dev/umts_boot0, umts_ipc0, umts_ipc1, umts_rfs0
+exynos-cpboot      boots the CP from the radio partition + /var/lib/exynos-cp/nv_data.bin
+exynos-cpd         serves the CP's file requests (only /var/lib/exynos-cp), talks IPC,
+                   logs to the journal; commands: echo "02 04 01" > /var/lib/exynos-cp/cmd
+exynos-modem.service  runs both, restarts (and re-boots the CP) on failure
+
+Disable: touch /etc/exynos-cp/disable, or boot with s10e.nomodem.
+The EFS partitions are never written; NV changes land in /var/lib/exynos-cp/nv_data.bin
+(original kept as nv_data.bin.orig).

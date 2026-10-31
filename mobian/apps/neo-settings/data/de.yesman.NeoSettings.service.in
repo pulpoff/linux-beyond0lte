@@ -1,0 +1,3 @@
+[D-BUS Service]
+Name=de.yesman.NeoSettings
+Exec=@bindir@/neo-settings --gapplication-service

@@ -1,0 +1,27 @@
+ui_print("Mobian (Debian + GNOME + Neo) for the Galaxy S10e");
+assert(getprop("ro.product.device") == "beyond0lte" || getprop("ro.build.product") == "beyond0lte" ||
+       abort("This package is for the Galaxy S10e (beyond0lte); this device is " + getprop("ro.product.device") + "."););
+show_progress(1.000000, 0);
+package_extract_file("install.sh", "/tmp/s10e-install.sh");
+package_extract_file("s10e-part", "/tmp/s10e-part");
+ui_print("- making room: a 40 GiB Linux partition at the end of userdata");
+if run_program("/system/bin/sh", "/tmp/s10e-install.sh", "prepare") != 0 then
+    abort("ERROR: " + file_getprop("/tmp/s10e.prop", "error"));
+endif;
+set_progress(0.020000);
+ui_print("- writing Linux (several minutes)");
+package_extract_file("rootfs.img", "/tmp/s10e-linux") ||
+    abort("ERROR: could not write the Linux partition");
+set_progress(0.920000);
+ui_print("- U-Boot to the recovery partition");
+package_extract_file("recovery.img", "/dev/block/platform/13d60000.ufs/by-name/recovery") ||
+    abort("ERROR: could not write the recovery partition");
+ui_print("- checking Linux, formatting Android's data on a first install");
+if run_program("/system/bin/sh", "/tmp/s10e-install.sh", "finish") != 0 then
+    abort("ERROR: " + file_getprop("/tmp/s10e.prop", "error"));
+endif;
+set_progress(1.000000);
+ui_print("Done. Rebooting into Linux.");
+ui_print("User 'user', password 147147. The first boot sets up firmware and restarts once.");
+ui_print("Power on from off starts Android; Android's 'Restart to recovery' starts Linux.");
+run_program("/system/bin/setprop", "sys.powerctl", "reboot,recovery");

@@ -1,0 +1,20 @@
+#!/bin/sh
+# Probe HDMI CEC through the dock: claim a playback address and poll the TV.
+# Only a TV that answers gets the 50 ms CEC poll (remote keys); otherwise the
+# dock AUX stays quiet. Run at dock/boot (neo-cec@) and every 30 min (timer).
+dev=/dev/${1:-cec0}
+P=/sys/module/exynos9820_dp/parameters/cec_poll_ms
+[ -e "$dev" ] || exit 0
+[ "$2" = recheck ] && [ "$(cat $P)" != 0 ] && exit 0	# already working
+cec-ctl -d "$dev" --playback --osd-name S10e >/dev/null 2>&1 || exit 0
+for i in 1 2 3; do
+	if cec-ctl -d "$dev" --poll --to 0 2>&1 | grep -q "Tx, OK"; then
+		echo 50 > $P
+		pa=$(cec-ctl -d "$dev" | sed -n "s/.*Physical Address *: //p")
+		cec-ctl -d "$dev" --to 0 --active-source phys-addr="$pa" >/dev/null 2>&1
+		echo "TV answers CEC: polling on, active source $pa"
+		exit 0
+	fi
+done
+echo 0 > $P
+echo "no CEC device answers: polling off"

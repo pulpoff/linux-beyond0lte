@@ -1,0 +1,7 @@
+[Unit]
+Description=HDMI CEC re-probe (only while CEC is not working)
+
+[Service]
+Type=oneshot
+TimeoutStartSec=60
+ExecStart=/usr/local/sbin/neo-cec-probe cec0 recheck

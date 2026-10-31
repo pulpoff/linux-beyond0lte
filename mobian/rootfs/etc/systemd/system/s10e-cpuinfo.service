@@ -9,5 +9,6 @@ Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/local/sbin/s10e-cpuinfo
 
-[Install]
-WantedBy=sysinit.target
+# Disabled (2026-10-31), no [Install] on purpose: a bind mount over /proc/cpuinfo makes the kernel refuse a
+# fresh /proc inside a user namespace, so every bwrap sandbox fails ("Can't mount proc on /proc"); WebKit's
+# web process among them, and the browser could open no page. Neo Settings does not read /proc/cpuinfo.

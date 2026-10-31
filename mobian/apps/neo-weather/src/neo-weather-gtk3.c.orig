@@ -1,0 +1,734 @@
+/* The weather page (see neo-weather.h). One Open-Meteo forecast (no key) with yesterday in it (past_days=1) fills
+ * the whole page; the last one is kept in ~/.cache/neo-launcher/forecast.json, so the page shows at once and is
+ * asked again when it is older than a quarter of an hour. The sky behind it is a gradient for the weather now. */
+#include "neo-weather.h"
+#include "neo-home.h"
+
+#include <handy.h>
+#include <json-glib/json-glib.h>
+#include <math.h>
+
+#define STALE_S (15 * 60)
+#define UA "neo-launcher/2.0 (Phosh home screen)"
+#define HOURS 24
+#define COL_W 66              /* px, one hour in the hourly strip */
+
+typedef struct {
+  GtkWidget *win, *body, *spinner;
+  NeoHome   *home;
+  double     lat, lon;
+  char      *place;
+} Page;
+
+static Page *current;
+
+/* ---- what the weather codes (WMO) look like and are called ---- */
+
+static const char *
+wx_icon (int code, gboolean day)
+{
+  if (code == 0)
+    return day ? "weather-clear-symbolic" : "weather-clear-night-symbolic";
+  if (code <= 2)
+    return day ? "weather-few-clouds-symbolic" : "weather-few-clouds-night-symbolic";
+  if (code == 3)
+    return "weather-overcast-symbolic";
+  if (code == 45 || code == 48)
+    return "weather-fog-symbolic";
+  if ((code >= 51 && code <= 57) || (code >= 80 && code <= 82))
+    return "weather-showers-scattered-symbolic";
+  if (code >= 61 && code <= 67)
+    return "weather-showers-symbolic";
+  if ((code >= 71 && code <= 77) || code == 85 || code == 86)
+    return "weather-snow-symbolic";
+  if (code >= 95)
+    return "weather-storm-symbolic";
+  return "weather-overcast-symbolic";
+}
+
+static const char *
+wx_name (int code)
+{
+  static const struct { int upto; const char *name; } names[] = {
+    { 0, "Clear" }, { 1, "Mostly clear" }, { 2, "Partly cloudy" }, { 3, "Cloudy" }, { 48, "Fog" },
+    { 55, "Drizzle" }, { 57, "Freezing drizzle" }, { 63, "Rain" }, { 65, "Heavy rain" }, { 67, "Freezing rain" },
+    { 75, "Snow" }, { 77, "Snow grains" }, { 81, "Showers" }, { 82, "Heavy showers" }, { 86, "Snow showers" },
+    { 99, "Thunderstorm" },
+  };
+  for (guint i = 0; i < G_N_ELEMENTS (names); i++)
+    if (code <= names[i].upto)
+      return names[i].name;
+  return "Cloudy";
+}
+
+/* the sky: a class on the window, its gradient is in style.css */
+static const char *
+wx_sky (int code, gboolean day)
+{
+  if (!day)
+    return "neo-wx-night";
+  if (code <= 1)
+    return "neo-wx-clear";
+  if (code == 45 || code == 48)
+    return "neo-wx-fog";
+  if (code >= 95)
+    return "neo-wx-storm";
+  if ((code >= 71 && code <= 77) || code == 85 || code == 86)
+    return "neo-wx-snow";
+  if (code >= 51)
+    return "neo-wx-rain";
+  return "neo-wx-cloudy";
+}
+
+/* the sun yellow, the moon pale, everything else white */
+static GdkPixbuf *
+wx_pixbuf (GtkWidget *w, const char *icon, int size)
+{
+  GtkIconTheme *theme = gtk_icon_theme_get_for_screen (gtk_widget_get_screen (w));
+  int scale = gtk_widget_get_scale_factor (w);
+  g_autoptr (GtkIconInfo) info = gtk_icon_theme_lookup_icon_for_scale (theme, icon, size, scale,
+                                                                       GTK_ICON_LOOKUP_FORCE_SIZE);
+  if (!info)
+    return NULL;
+  GdkRGBA fg = { 1, 1, 1, 1 };
+  if (g_str_has_prefix (icon, "weather-clear-symbolic") || g_str_has_prefix (icon, "daytime-"))
+    fg = (GdkRGBA) { 1, 0.80, 0.25, 1 };
+  else if (strstr (icon, "night"))
+    fg = (GdkRGBA) { 0.80, 0.85, 0.95, 1 };
+  return gtk_icon_info_load_symbolic (info, &fg, NULL, NULL, NULL, NULL, NULL);
+}
+
+static GtkWidget *
+wx_image (GtkWidget *ref, const char *icon, int size)
+{
+  g_autoptr (GdkPixbuf) pb = wx_pixbuf (ref, icon, size);
+  if (!pb)
+    return gtk_image_new_from_icon_name (icon, GTK_ICON_SIZE_DND);
+  cairo_surface_t *s = gdk_cairo_surface_create_from_pixbuf (pb, gtk_widget_get_scale_factor (ref), NULL);
+  GtkWidget *img = gtk_image_new_from_surface (s);
+  cairo_surface_destroy (s);
+  return img;
+}
+
+/* ---- the forecast, read ---- */
+
+typedef struct {
+  int    n;                    /* hours */
+  char **time;                 /* "2026-10-30T04:00", local */
+  double *temp, *pop;
+  int   *code, *day;
+} Hourly;
+
+static double
+num (JsonArray *a, guint i)
+{
+  if (!a || i >= json_array_get_length (a))
+    return NAN;
+  JsonNode *n = json_array_get_element (a, i);
+  return JSON_NODE_HOLDS_VALUE (n) ? json_node_get_double (n) : NAN;
+}
+
+static const char *
+str (JsonArray *a, guint i)
+{
+  if (!a || i >= json_array_get_length (a))
+    return NULL;
+  JsonNode *n = json_array_get_element (a, i);
+  return JSON_NODE_HOLDS_VALUE (n) ? json_node_get_string (n) : NULL;
+}
+
+static JsonArray *
+arr (JsonObject *o, const char *name)
+{
+  return o && json_object_has_member (o, name) ? json_object_get_array_member (o, name) : NULL;
+}
+
+static double
+cur (JsonObject *c, const char *name)
+{
+  return c && json_object_has_member (c, name) ? json_object_get_double_member (c, name) : NAN;
+}
+
+static GDateTime *
+parse_local (const char *t)
+{
+  if (!t)
+    return NULL;
+  g_autoptr (GTimeZone) tz = g_time_zone_new_local ();
+  g_autofree char *full = strlen (t) == 16 ? g_strconcat (t, ":00", NULL) : g_strdup (t);
+  return g_date_time_new_from_iso8601 (full, tz);
+}
+
+static char *
+fmt_temp (double t)
+{
+  if (isnan (t))
+    return g_strdup ("–");
+  double r = round (t);
+  return g_strdup_printf ("%.0f°", r == 0 ? 0 : r);     /* never "-0°" */
+}
+
+/* ---- the hourly strip: time, icon, temperature, the curve, the chance of rain ---- */
+
+typedef struct {
+  char    *label;              /* "05:00" */
+  char    *icon;
+  char    *value;              /* "7°" or "Sunrise" */
+  double   temp;               /* for the curve (a sunrise gets the hour's) */
+  double   pop;                /* NAN: none shown */
+  gboolean dot;
+} Slot;
+
+typedef struct {
+  GArray          *slots;
+  double           lo, hi;
+  cairo_surface_t *picture;    /* the strip drawn once: scrolling repaints it every frame */
+} Strip;
+
+static void
+slot_clear (Slot *s)
+{
+  g_free (s->label);
+  g_free (s->icon);
+  g_free (s->value);
+}
+
+static void
+strip_free (Strip *st)
+{
+  g_array_unref (st->slots);
+  g_clear_pointer (&st->picture, cairo_surface_destroy);
+  g_free (st);
+}
+
+static void
+draw_text (cairo_t *cr, GtkWidget *w, const char *text, const char *font, double cx, double y, double alpha)
+{
+  PangoLayout *l = gtk_widget_create_pango_layout (w, text);
+  PangoFontDescription *f = pango_font_description_from_string (font);
+  pango_layout_set_font_description (l, f);
+  int tw, th;
+  pango_layout_get_pixel_size (l, &tw, &th);
+  cairo_set_source_rgba (cr, 1, 1, 1, alpha);
+  cairo_move_to (cr, cx - tw / 2.0, y);
+  pango_cairo_show_layout (cr, l);
+  pango_font_description_free (f);
+  g_object_unref (l);
+}
+
+static void
+draw_drop (cairo_t *cr, double x, double y, double r)
+{
+  cairo_move_to (cr, x, y - r * 1.6);
+  cairo_curve_to (cr, x + r * 0.4, y - r * 0.8, x + r, y - r * 0.3, x + r, y + r * 0.2);
+  cairo_arc (cr, x, y + r * 0.2, r, 0, G_PI);
+  cairo_curve_to (cr, x - r, y - r * 0.3, x - r * 0.4, y - r * 0.8, x, y - r * 1.6);
+  cairo_close_path (cr);
+  cairo_set_source_rgba (cr, 0.75, 0.80, 0.90, 0.9);
+  cairo_fill (cr);
+}
+
+#define Y_TIME 6
+#define Y_ICON 34
+#define Y_VALUE 72
+#define Y_CURVE_TOP 112
+#define Y_CURVE_BOT 140
+#define Y_POP 162
+#define STRIP_H 190
+
+static void
+paint_strip (GtkWidget *area, cairo_t *cr, Strip *st)
+{
+  guint n = st->slots->len;
+  double span = MAX (st->hi - st->lo, 1);
+  #define CY(t) (Y_CURVE_BOT - ((t) - st->lo) / span * (Y_CURVE_BOT - Y_CURVE_TOP))
+  #define CX(i) ((i) * COL_W + COL_W / 2.0)
+
+  /* the curve, smooth: each segment leaves and arrives level */
+  cairo_set_line_width (cr, 1.6);
+  cairo_set_source_rgba (cr, 1, 1, 1, 0.75);
+  for (guint i = 0; i < n; i++) {
+    Slot *s = &g_array_index (st->slots, Slot, i);
+    if (i == 0) {
+      cairo_move_to (cr, CX (i), CY (s->temp));
+      continue;
+    }
+    Slot *p = &g_array_index (st->slots, Slot, i - 1);
+    double mx = (CX (i - 1) + CX (i)) / 2;
+    cairo_curve_to (cr, mx, CY (p->temp), mx, CY (s->temp), CX (i), CY (s->temp));
+  }
+  cairo_stroke (cr);
+
+  int scale = gtk_widget_get_scale_factor (area);
+  for (guint i = 0; i < n; i++) {
+    Slot *s = &g_array_index (st->slots, Slot, i);
+    double x = CX (i);
+    draw_text (cr, area, s->label, "Sans Bold 10", x, Y_TIME, 0.85);
+    g_autoptr (GdkPixbuf) pb = wx_pixbuf (area, s->icon, 28);
+    if (pb) {
+      cairo_surface_t *surf = gdk_cairo_surface_create_from_pixbuf (pb, scale, NULL);
+      cairo_set_source_surface (cr, surf, x - 14, Y_ICON);
+      cairo_paint (cr);
+      cairo_surface_destroy (surf);
+    }
+    draw_text (cr, area, s->value, s->dot ? "Sans Bold 14" : "Sans Bold 11", x, s->dot ? Y_VALUE : Y_VALUE + 3, 1);
+    if (s->dot) {
+      cairo_arc (cr, x, CY (s->temp), 4, 0, 2 * G_PI);
+      cairo_set_source_rgb (cr, 1, 1, 1);
+      cairo_fill (cr);
+    }
+    if (!isnan (s->pop)) {
+      g_autofree char *pop = g_strdup_printf ("%.0f%%", s->pop);
+      draw_drop (cr, x - 16, Y_POP + 9, 4);
+      draw_text (cr, area, pop, "Sans Bold 10", x + 6, Y_POP, 0.9);
+    }
+  }
+}
+
+static gboolean
+draw_strip (GtkWidget *area, cairo_t *cr, Strip *st)
+{
+  if (!st->picture) {
+    int w = gtk_widget_get_allocated_width (area), h = gtk_widget_get_allocated_height (area);
+    st->picture = gdk_window_create_similar_surface (gtk_widget_get_window (area), CAIRO_CONTENT_COLOR_ALPHA, w, h);
+    cairo_t *pc = cairo_create (st->picture);
+    paint_strip (area, pc, st);
+    cairo_destroy (pc);
+  }
+  cairo_set_source_surface (cr, st->picture, 0, 0);
+  cairo_paint (cr);
+  return TRUE;
+}
+
+static void
+add_slot (Strip *st, const char *label, const char *icon, const char *value, double temp, double pop, gboolean dot)
+{
+  Slot s = { g_strdup (label), g_strdup (icon), g_strdup (value), temp, pop, dot };
+  g_array_append_val (st->slots, s);
+  if (!isnan (temp)) {
+    st->lo = MIN (st->lo, temp);
+    st->hi = MAX (st->hi, temp);
+  }
+}
+
+/* the next 24 hours from `first`, with today's and tomorrow's sunrise and sunset in between */
+static GtkWidget *
+hourly_strip (GtkWidget *ref, JsonObject *hourly, guint first, JsonArray *sunrise, JsonArray *sunset)
+{
+  Strip *st = g_new0 (Strip, 1);
+  st->slots = g_array_new (FALSE, TRUE, sizeof (Slot));
+  g_array_set_clear_func (st->slots, (GDestroyNotify) slot_clear);
+  st->lo = G_MAXDOUBLE;
+  st->hi = -G_MAXDOUBLE;
+  JsonArray *time = arr (hourly, "time"), *temp = arr (hourly, "temperature_2m");
+  JsonArray *code = arr (hourly, "weather_code"), *pop = arr (hourly, "precipitation_probability");
+  JsonArray *isday = arr (hourly, "is_day");
+
+  g_autoptr (GPtrArray) events = g_ptr_array_new_with_free_func ((GDestroyNotify) g_date_time_unref);
+  g_autoptr (GPtrArray) kinds = g_ptr_array_new ();
+  for (guint d = 0; sunrise && d < json_array_get_length (sunrise); d++) {
+    GDateTime *r = parse_local (str (sunrise, d)), *s = parse_local (str (sunset, d));
+    if (r) { g_ptr_array_add (events, r); g_ptr_array_add (kinds, "Sunrise"); }
+    if (s) { g_ptr_array_add (events, s); g_ptr_array_add (kinds, "Sunset"); }
+  }
+
+  for (guint i = first; time && i < first + HOURS && i < json_array_get_length (time); i++) {
+    g_autoptr (GDateTime) t = parse_local (str (time, i));
+    if (!t)
+      continue;
+    double tc = num (temp, i);
+    g_autofree char *label = g_date_time_format (t, "%H:%M");
+    g_autofree char *value = fmt_temp (tc);
+    add_slot (st, label, wx_icon ((int) num (code, i), num (isday, i) != 0), value, tc, num (pop, i), TRUE);
+    /* a sunrise or sunset within this hour follows it */
+    g_autoptr (GDateTime) next = g_date_time_add_hours (t, 1);
+    for (guint e = 0; e < events->len; e++) {
+      GDateTime *at = events->pdata[e];
+      if (g_date_time_compare (at, t) > 0 && g_date_time_compare (at, next) < 0) {
+        g_autofree char *el = g_date_time_format (at, "%H:%M");
+        double frac = g_date_time_difference (at, t) / (double) G_TIME_SPAN_HOUR, tn = num (temp, i + 1);
+        gboolean rise = !g_strcmp0 (kinds->pdata[e], "Sunrise");
+        add_slot (st, el, rise ? "daytime-sunrise-symbolic" : "daytime-sunset-symbolic", kinds->pdata[e],
+                  isnan (tn) ? tc : tc + (tn - tc) * frac, NAN, FALSE);
+      }
+    }
+  }
+
+  GtkWidget *area = gtk_drawing_area_new ();
+  gtk_widget_set_size_request (area, st->slots->len * COL_W, STRIP_H);
+  g_signal_connect_data (area, "draw", G_CALLBACK (draw_strip), st, (GClosureNotify) (void (*) (void)) strip_free, 0);
+  GtkWidget *sc = gtk_scrolled_window_new (NULL, NULL);
+  gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (sc), GTK_POLICY_EXTERNAL, GTK_POLICY_NEVER);
+  gtk_scrolled_window_set_kinetic_scrolling (GTK_SCROLLED_WINDOW (sc), TRUE);
+  gtk_container_add (GTK_CONTAINER (sc), area);
+  return sc;
+}
+
+/* ---- the page ---- */
+
+static GtkWidget *
+label (const char *text, const char *cls, float xalign)
+{
+  GtkWidget *l = gtk_label_new (text);
+  gtk_label_set_xalign (GTK_LABEL (l), xalign);
+  gtk_label_set_line_wrap (GTK_LABEL (l), TRUE);
+  if (cls)
+    gtk_style_context_add_class (gtk_widget_get_style_context (l), cls);
+  return l;
+}
+
+static GtkWidget *
+card (void)
+{
+  GtkWidget *c = gtk_box_new (GTK_ORIENTATION_VERTICAL, 8);
+  gtk_style_context_add_class (gtk_widget_get_style_context (c), "neo-wx-card");
+  return c;
+}
+
+static GtkWidget *
+drop_label (double pop)
+{
+  GtkWidget *b = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 3);
+  if (isnan (pop))
+    return b;
+  GtkWidget *d = gtk_image_new_from_icon_name ("weather-showers-symbolic", GTK_ICON_SIZE_MENU);
+  gtk_image_set_pixel_size (GTK_IMAGE (d), 12);
+  gtk_style_context_add_class (gtk_widget_get_style_context (d), "neo-wx-dim");
+  g_autofree char *t = g_strdup_printf ("%.0f%%", pop);
+  gtk_container_add (GTK_CONTAINER (b), d);
+  gtk_container_add (GTK_CONTAINER (b), label (t, "neo-wx-small", 0));
+  return b;
+}
+
+static const char *
+uv_word (double uv)
+{
+  return uv < 3 ? "Low" : uv < 6 ? "Moderate" : uv < 8 ? "High" : uv < 11 ? "Very high" : "Extreme";
+}
+
+static GtkWidget *
+detail (const char *title, const char *value, const char *sub)
+{
+  GtkWidget *b = gtk_box_new (GTK_ORIENTATION_VERTICAL, 2);
+  gtk_style_context_add_class (gtk_widget_get_style_context (b), "neo-wx-detail");
+  gtk_widget_set_hexpand (b, TRUE);
+  gtk_container_add (GTK_CONTAINER (b), label (title, "neo-wx-dim", 0));
+  gtk_container_add (GTK_CONTAINER (b), label (value, "neo-wx-big", 0));
+  if (sub)
+    gtk_container_add (GTK_CONTAINER (b), label (sub, "neo-wx-small", 0));
+  return b;
+}
+
+static void
+set_sky (Page *p, const char *sky)
+{
+  GtkStyleContext *ctx = gtk_widget_get_style_context (p->win);
+  const char *skies[] = { "neo-wx-night", "neo-wx-clear", "neo-wx-fog", "neo-wx-storm", "neo-wx-snow",
+                          "neo-wx-rain", "neo-wx-cloudy" };
+  for (guint i = 0; i < G_N_ELEMENTS (skies); i++)
+    gtk_style_context_remove_class (ctx, skies[i]);
+  gtk_style_context_add_class (ctx, sky);
+}
+
+static void
+fill (Page *p, JsonObject *o)
+{
+  GtkWidget *ref = p->win;
+  JsonObject *c = o && json_object_has_member (o, "current") ? json_object_get_object_member (o, "current") : NULL;
+  JsonObject *h = o && json_object_has_member (o, "hourly") ? json_object_get_object_member (o, "hourly") : NULL;
+  JsonObject *d = o && json_object_has_member (o, "daily") ? json_object_get_object_member (o, "daily") : NULL;
+  if (!c || !h || !d)
+    return;
+  gtk_container_foreach (GTK_CONTAINER (p->body), (GtkCallback) gtk_widget_destroy, NULL);
+
+  int code = (int) cur (c, "weather_code");
+  gboolean day = cur (c, "is_day") != 0;
+  set_sky (p, wx_sky (code, day));
+  JsonArray *dmax = arr (d, "temperature_2m_max"), *dmin = arr (d, "temperature_2m_min");
+  JsonArray *dcode = arr (d, "weather_code"), *dpop = arr (d, "precipitation_probability_max");
+  JsonArray *dtime = arr (d, "time"), *rise = arr (d, "sunrise"), *set = arr (d, "sunset"), *uv = arr (d, "uv_index_max");
+  /* daily[0] is yesterday, daily[1] today */
+
+  /* the head: place, temperature, what it is, today's high and low, feels like */
+  GtkWidget *head = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
+  gtk_style_context_add_class (gtk_widget_get_style_context (head), "neo-wx-head");
+  GtkWidget *place = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 10);
+  GtkWidget *pin = gtk_image_new_from_icon_name ("mark-location-symbolic", GTK_ICON_SIZE_LARGE_TOOLBAR);
+  gtk_container_add (GTK_CONTAINER (place), pin);
+  gtk_container_add (GTK_CONTAINER (place), label (p->place ? p->place : "", "neo-wx-place", 0));
+  gtk_container_add (GTK_CONTAINER (head), place);
+  g_autofree char *now = fmt_temp (cur (c, "temperature_2m"));
+  gtk_container_add (GTK_CONTAINER (head), label (now, "neo-wx-now", 0));
+  gtk_container_add (GTK_CONTAINER (head), label (wx_name (code), "neo-wx-cond", 0));
+  g_autofree char *hi = fmt_temp (num (dmax, 1)), *lo = fmt_temp (num (dmin, 1));
+  g_autofree char *feels = fmt_temp (cur (c, "apparent_temperature"));
+  g_autofree char *range = g_strdup_printf ("↑%s / ↓%s\nFeels like %s", hi, lo, feels);
+  GtkWidget *rl = label (range, "neo-wx-range", 0);
+  gtk_widget_set_margin_top (rl, 70);
+  gtk_container_add (GTK_CONTAINER (head), rl);
+  gtk_container_add (GTK_CONTAINER (p->body), head);
+
+  /* the next 24 hours */
+  GtkWidget *hours = card ();
+  g_autofree char *summary = g_strdup_printf ("%s. High %s, low %s.", wx_name ((int) num (dcode, 1)), hi, lo);
+  gtk_container_add (GTK_CONTAINER (hours), label (summary, "neo-wx-summary", 0));
+  gtk_container_add (GTK_CONTAINER (hours), gtk_separator_new (GTK_ORIENTATION_HORIZONTAL));
+  JsonArray *htime = arr (h, "time");
+  g_autoptr (GDateTime) dnow = g_date_time_new_now_local ();
+  g_autofree char *hour_now = g_date_time_format (dnow, "%Y-%m-%dT%H:00");
+  guint first = 0;
+  for (guint i = 0; htime && i < json_array_get_length (htime); i++)
+    if (!g_strcmp0 (str (htime, i), hour_now)) {
+      first = i;
+      break;
+    }
+  gtk_container_add (GTK_CONTAINER (hours), hourly_strip (ref, h, first, rise, set));
+  gtk_container_add (GTK_CONTAINER (p->body), hours);
+
+  /* now against this hour yesterday */
+  double then = num (arr (h, "temperature_2m"), first >= 24 ? first - 24 : G_MAXUINT);
+  double diff = cur (c, "temperature_2m") - then;
+  if (!isnan (diff)) {
+    GtkWidget *cmp = card ();
+    GtkWidget *t = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
+    GtkWidget *th = gtk_image_new_from_icon_name ("temperature-symbolic", GTK_ICON_SIZE_MENU);
+    gtk_container_add (GTK_CONTAINER (t), th);
+    gtk_container_add (GTK_CONTAINER (t), label ("Today's temperature", "neo-wx-dim", 0));
+    gtk_container_add (GTK_CONTAINER (cmp), t);
+    GtkWidget *row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 12);
+    const char *say = fabs (diff) < 1 ? "About the same as yesterday"
+                    : diff < 0 ? (diff > -4 ? "Temperatures a little lower than yesterday"
+                                            : "Much colder than yesterday")
+                               : (diff < 4 ? "Temperatures a little higher than yesterday"
+                                           : "Much warmer than yesterday");
+    GtkWidget *sl = label (say, "neo-wx-big", 0);
+    gtk_widget_set_hexpand (sl, TRUE);
+    gtk_container_add (GTK_CONTAINER (row), sl);
+    if (fabs (diff) >= 1) {
+      g_autofree char *dd = g_strdup_printf ("%.0f°%s", fabs (diff), diff < 0 ? "↓" : "↑");
+      gtk_container_add (GTK_CONTAINER (row), label (dd, "neo-wx-delta", 1));
+    }
+    gtk_container_add (GTK_CONTAINER (cmp), row);
+    gtk_container_add (GTK_CONTAINER (p->body), cmp);
+  }
+
+  /* the week: yesterday dim, then today and on */
+  GtkWidget *week = card ();
+  GtkWidget *grid = gtk_grid_new ();
+  gtk_grid_set_row_spacing (GTK_GRID (grid), 18);
+  gtk_grid_set_column_spacing (GTK_GRID (grid), 10);
+  for (guint i = 0; dtime && i < json_array_get_length (dtime); i++) {
+    g_autofree char *noon = g_strconcat (str (dtime, i) ? str (dtime, i) : "", "T12:00", NULL);
+    g_autoptr (GDateTime) dt = parse_local (noon);
+    g_autofree char *name = i == 0 ? g_strdup ("Yesterday") : i == 1 ? g_strdup ("Today")
+                          : dt ? g_date_time_format (dt, "%a") : g_strdup ("");
+    g_autofree char *mx = fmt_temp (num (dmax, i)), *mn = fmt_temp (num (dmin, i));
+    g_autofree char *temps = g_strdup_printf ("%s  %s", mx, mn);
+    GtkWidget *n = label (name, i == 0 ? "neo-wx-yesterday" : "neo-wx-day", 0);
+    gtk_widget_set_hexpand (n, TRUE);
+    gtk_grid_attach (GTK_GRID (grid), n, 0, i, 1, 1);
+    if (i > 0) {
+      int dc = (int) num (dcode, i);
+      gtk_grid_attach (GTK_GRID (grid), drop_label (num (dpop, i)), 1, i, 1, 1);
+      gtk_grid_attach (GTK_GRID (grid), wx_image (ref, wx_icon (dc, TRUE), 26), 2, i, 1, 1);
+      gtk_grid_attach (GTK_GRID (grid), wx_image (ref, wx_icon (dc, FALSE), 26), 3, i, 1, 1);
+    }
+    gtk_grid_attach (GTK_GRID (grid), label (temps, i == 0 ? "neo-wx-yesterday" : "neo-wx-day", 1), 4, i, 1, 1);
+  }
+  gtk_container_add (GTK_CONTAINER (week), grid);
+  gtk_container_add (GTK_CONTAINER (p->body), week);
+
+  /* the details */
+  GtkWidget *more = card ();
+  GtkWidget *dg = gtk_grid_new ();
+  gtk_grid_set_row_spacing (GTK_GRID (dg), 16);
+  gtk_grid_set_column_homogeneous (GTK_GRID (dg), TRUE);
+  g_autoptr (GDateTime) r = parse_local (str (rise, 1));
+  g_autoptr (GDateTime) s = parse_local (str (set, 1));
+  g_autofree char *rs = r ? g_date_time_format (r, "%H:%M") : g_strdup ("–");
+  g_autofree char *ss = s ? g_date_time_format (s, "%H:%M") : g_strdup ("–");
+  g_autofree char *ssub = g_strdup_printf ("Sunset %s", ss);
+  double u = num (uv, 1);
+  g_autofree char *uvs = isnan (u) ? g_strdup ("–") : g_strdup_printf ("%.0f", u);
+  g_autofree char *hum = g_strdup_printf ("%.0f%%", cur (c, "relative_humidity_2m"));
+  g_autofree char *wind = g_strdup_printf ("%.0f km/h", cur (c, "wind_speed_10m"));
+  g_autofree char *pres = g_strdup_printf ("%.0f hPa", cur (c, "pressure_msl"));
+  gtk_grid_attach (GTK_GRID (dg), detail ("Sunrise", rs, ssub), 0, 0, 1, 1);
+  gtk_grid_attach (GTK_GRID (dg), detail ("UV index", uvs, isnan (u) ? NULL : uv_word (u)), 1, 0, 1, 1);
+  gtk_grid_attach (GTK_GRID (dg), detail ("Humidity", hum, NULL), 0, 1, 1, 1);
+  gtk_grid_attach (GTK_GRID (dg), detail ("Wind", wind, NULL), 1, 1, 1, 1);
+  gtk_grid_attach (GTK_GRID (dg), detail ("Pressure", pres, NULL), 0, 2, 1, 1);
+  gtk_container_add (GTK_CONTAINER (more), dg);
+  gtk_container_add (GTK_CONTAINER (p->body), more);
+
+  gtk_container_add (GTK_CONTAINER (p->body), label ("Open-Meteo.com", "neo-wx-credit", 0.5));
+  gtk_widget_show_all (p->body);
+}
+
+/* ---- the forecast, fetched (curl, away from the main loop) and kept ---- */
+
+static char *
+cache_path (void)
+{
+  return g_build_filename (g_get_user_cache_dir (), "neo-launcher", "forecast.json", NULL);
+}
+
+static void
+fetched (GObject *src, GAsyncResult *res, gpointer data)
+{
+  g_autofree char *out = NULL;
+  gboolean ok = g_subprocess_communicate_utf8_finish (G_SUBPROCESS (src), res, &out, NULL, NULL) && out;
+  Page *p = current;
+  if (p != data)                  /* closed meanwhile */
+    return;
+  gtk_spinner_stop (GTK_SPINNER (p->spinner));
+  g_autoptr (JsonParser) jp = json_parser_new ();
+  if (!ok || !json_parser_load_from_data (jp, out, -1, NULL) || !JSON_NODE_HOLDS_OBJECT (json_parser_get_root (jp))) {
+    g_message ("weather page: Open-Meteo gave no answer");
+    return;
+  }
+  g_autofree char *path = cache_path ();
+  g_autofree char *dir = g_path_get_dirname (path);
+  g_mkdir_with_parents (dir, 0700);
+  g_file_set_contents (path, out, -1, NULL);
+  fill (p, json_node_get_object (json_parser_get_root (jp)));
+}
+
+static void
+fetch (Page *p)
+{
+  char lat[G_ASCII_DTOSTR_BUF_SIZE], lon[G_ASCII_DTOSTR_BUF_SIZE];
+  g_ascii_formatd (lat, sizeof lat, "%.4f", p->lat);
+  g_ascii_formatd (lon, sizeof lon, "%.4f", p->lon);
+  g_autofree char *url = g_strdup_printf (
+    "https://api.open-meteo.com/v1/forecast?latitude=%s&longitude=%s&timezone=auto&past_days=1&forecast_days=8"
+    "&current=temperature_2m,apparent_temperature,weather_code,is_day,relative_humidity_2m,wind_speed_10m,pressure_msl"
+    "&hourly=temperature_2m,weather_code,precipitation_probability,is_day"
+    "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset,"
+    "uv_index_max", lat, lon);
+  const char *argv[] = { "curl", "-sf", "--max-time", "20", "-A", UA, url, NULL };
+  GSubprocess *sp = g_subprocess_newv (argv, G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_SILENCE, NULL);
+  if (!sp)
+    return;
+  gtk_spinner_start (GTK_SPINNER (p->spinner));
+  g_subprocess_communicate_utf8_async (sp, NULL, NULL, fetched, p);
+  g_object_unref (sp);
+}
+
+/* the cached forecast, if it is for here; TRUE when it is fresh too */
+static gboolean
+load_cache (Page *p)
+{
+  g_autofree char *path = cache_path ();
+  g_autoptr (JsonParser) jp = json_parser_new ();
+  if (!json_parser_load_from_file (jp, path, NULL) || !JSON_NODE_HOLDS_OBJECT (json_parser_get_root (jp)))
+    return FALSE;
+  JsonObject *o = json_node_get_object (json_parser_get_root (jp));
+  double lat = json_object_get_double_member_with_default (o, "latitude", 999);
+  double lon = json_object_get_double_member_with_default (o, "longitude", 999);
+  if (fabs (lat - p->lat) > 0.2 || fabs (lon - p->lon) > 0.2)
+    return FALSE;
+  fill (p, o);
+  g_autoptr (GFile) f = g_file_new_for_path (path);
+  g_autoptr (GFileInfo) info = g_file_query_info (f, G_FILE_ATTRIBUTE_TIME_MODIFIED, 0, NULL, NULL);
+  return info && g_get_real_time () / G_USEC_PER_SEC -
+                   (gint64) g_file_info_get_attribute_uint64 (info, G_FILE_ATTRIBUTE_TIME_MODIFIED) < STALE_S;
+}
+
+/* ---- the window ---- */
+
+static void
+on_destroy (GtkWidget *w, Page *p)
+{
+  if (current == p)
+    current = NULL;
+  g_free (p->place);
+  g_free (p);
+}
+
+static void
+close_page (Page *p)
+{
+  NeoHome *home = p->home;
+  gtk_widget_destroy (p->win);
+  neo_home_show (home);
+}
+
+static gboolean
+on_key (GtkWidget *w, GdkEventKey *e, Page *p)
+{
+  if (e->keyval == GDK_KEY_Escape || (e->keyval == GDK_KEY_Left && (e->state & GDK_MOD1_MASK))) {
+    close_page (p);
+    return TRUE;
+  }
+  return FALSE;
+}
+
+static void
+back_clicked (GtkButton *b, Page *p)
+{
+  close_page (p);
+}
+
+static void
+refresh_clicked (GtkButton *b, Page *p)
+{
+  fetch (p);
+}
+
+void
+neo_weather_show (GtkApplication *app, NeoHome *home, double lat, double lon, const char *place)
+{
+  if (current) {
+    gtk_window_present (GTK_WINDOW (current->win));
+    neo_home_hide (home);
+    return;
+  }
+  Page *p = current = g_new0 (Page, 1);
+  p->home = home;
+  p->lat = lat;
+  p->lon = lon;
+  p->place = g_strdup (place);
+
+  GtkWidget *win = p->win = hdy_application_window_new ();
+  gtk_window_set_application (GTK_WINDOW (win), app);
+  gtk_window_set_title (GTK_WINDOW (win), "Weather");
+  gtk_window_set_default_size (GTK_WINDOW (win), 360, 720);
+  gtk_style_context_add_class (gtk_widget_get_style_context (win), "neo-wx");
+  set_sky (p, "neo-wx-cloudy");
+  g_signal_connect (win, "destroy", G_CALLBACK (on_destroy), p);
+  g_signal_connect (win, "key-press-event", G_CALLBACK (on_key), p);
+
+  GtkWidget *overlay = gtk_overlay_new ();
+  GtkWidget *sc = gtk_scrolled_window_new (NULL, NULL);
+  gtk_scrolled_window_set_policy (GTK_SCROLLED_WINDOW (sc), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+  gtk_widget_set_vexpand (sc, TRUE);
+  p->body = gtk_box_new (GTK_ORIENTATION_VERTICAL, 12);
+  gtk_style_context_add_class (gtk_widget_get_style_context (p->body), "neo-wx-body");
+  gtk_container_add (GTK_CONTAINER (sc), p->body);
+  gtk_container_add (GTK_CONTAINER (overlay), sc);
+
+  /* back and reload float over the sky, top corners */
+  GtkWidget *bar = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 0);
+  gtk_widget_set_valign (bar, GTK_ALIGN_START);
+  gtk_style_context_add_class (gtk_widget_get_style_context (bar), "neo-wx-bar");
+  GtkWidget *back = gtk_button_new_from_icon_name ("go-previous-symbolic", GTK_ICON_SIZE_BUTTON);
+  GtkWidget *reload = gtk_button_new_from_icon_name ("view-refresh-symbolic", GTK_ICON_SIZE_BUTTON);
+  p->spinner = gtk_spinner_new ();
+  for (GtkWidget **b = (GtkWidget *[]) { back, reload, NULL }; *b; b++) {
+    gtk_button_set_relief (GTK_BUTTON (*b), GTK_RELIEF_NONE);
+    gtk_style_context_add_class (gtk_widget_get_style_context (*b), "circular");
+  }
+  g_signal_connect (back, "clicked", G_CALLBACK (back_clicked), p);
+  g_signal_connect (reload, "clicked", G_CALLBACK (refresh_clicked), p);
+  gtk_box_pack_start (GTK_BOX (bar), back, FALSE, FALSE, 0);
+  gtk_box_pack_end (GTK_BOX (bar), reload, FALSE, FALSE, 0);
+  gtk_box_pack_end (GTK_BOX (bar), p->spinner, FALSE, FALSE, 0);
+  gtk_overlay_add_overlay (GTK_OVERLAY (overlay), bar);
+  gtk_container_add (GTK_CONTAINER (win), overlay);
+
+  gtk_widget_show_all (win);
+  if (!load_cache (p))
+    fetch (p);
+  neo_home_hide (home);
+}

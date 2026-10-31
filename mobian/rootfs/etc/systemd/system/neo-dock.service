@@ -1,0 +1,10 @@
+[Unit]
+Description=Switch between Phosh and the GNOME desktop on dock/undock
+After=phosh.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/neo-dock
+
+[Install]
+WantedBy=graphical.target

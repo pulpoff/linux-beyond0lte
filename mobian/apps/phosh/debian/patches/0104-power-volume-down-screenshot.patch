@@ -1,0 +1,173 @@
+From: pulpoff <pashkovsky@gmail.com>
+Subject: Power + volume down takes a screenshot
+
+As on Android: volume down while the power button is held, or the power
+button within 700 ms of volume down, takes a screenshot through Phosh's
+screenshot manager, and the power button's release does not blank the
+screen. The volume popup the key brings up is closed and held off for
+1.5 s (the volume daemon may still ask for it after us), and the picture
+is taken 250 ms later, once the popup is off the screen.
+---
+--- a/src/screen-saver-manager.c	2026-10-09 22:16:34.226444976 +0200
++++ b/src/screen-saver-manager.c	2026-10-09 22:17:01.687810427 +0200
+@@ -9,6 +9,7 @@
+ #define G_LOG_DOMAIN "phosh-screen-saver-manager"
+ 
+ #include "screen-saver-manager.h"
++#include "screenshot-manager.h"
+ #include "session-presence.h"
+ #include "shell-priv.h"
+ #include "idle-manager.h"
+@@ -82,6 +83,10 @@
+ 
+   /* Power button */
+   guint    long_press_id;
++  /* power + volume down = screenshot (Android) */
++  gboolean power_held;
++  gint64   vol_down_time;
++  gboolean screenshot_combo;
+ 
+   GSettings *settings;
+   gboolean lock_enabled;
+@@ -190,6 +195,47 @@
+ }
+ 
+ 
++static gboolean
++on_screenshot_combo_timeout (gpointer data)
++{
++  PhoshScreenshotManager *screenshot_manager;
++
++  screenshot_manager = phosh_shell_get_screenshot_manager (phosh_shell_get_default ());
++  if (screenshot_manager)
++    phosh_screenshot_manager_take_screenshot (screenshot_manager, NULL, NULL, TRUE, FALSE);
++  return G_SOURCE_REMOVE;
++}
++
++
++static void
++screenshot_combo (PhoshScreenSaverManager *self)
++{
++  self->screenshot_combo = TRUE;
++  g_clear_handle_id (&self->long_press_id, g_source_remove);
++  /* the volume key's popup goes first (and stays away: the volume daemon may ask for it after us), then the
++   * picture once the popup is off the screen */
++  phosh_shell_suppress_osd (phosh_shell_get_default (), 1500);
++  g_timeout_add (250, on_screenshot_combo_timeout, NULL);
++}
++
++
++/**
++ * phosh_screen_saver_manager_volume_down_pressed:
++ * @self: The screen saver manager
++ *
++ * Volume down was pressed: with the power button held (or pressed right after it) that is a screenshot.
++ */
++void
++phosh_screen_saver_manager_volume_down_pressed (PhoshScreenSaverManager *self)
++{
++  g_return_if_fail (PHOSH_IS_SCREEN_SAVER_MANAGER (self));
++
++  self->vol_down_time = g_get_monotonic_time ();
++  if (self->power_held && !self->screenshot_combo)
++    screenshot_combo (self);
++}
++
++
+ static void
+ on_power_button_pressed (GSimpleAction *action, GVariant *param, gpointer data)
+ {
+@@ -197,6 +243,18 @@
+   static gboolean state_on_press;
+   gboolean press = g_variant_get_boolean (param);
+ 
++  self->power_held = press;
++  if (press && g_get_monotonic_time () - self->vol_down_time < 700 * G_TIME_SPAN_MILLISECOND) {
++    screenshot_combo (self);
++    return;
++  }
++  if (!press && self->screenshot_combo) {
++    /* the power half of a screenshot: no blanking */
++    self->screenshot_combo = FALSE;
++    g_clear_handle_id (&self->long_press_id, g_source_remove);
++    return;
++  }
++
+   /* We only detect long press when screen is active */
+   if (press && self->active == FALSE) {
+     if (self->long_press_id) {
+--- a/src/screen-saver-manager.h	2026-10-09 22:16:34.226473062 +0200
++++ b/src/screen-saver-manager.h	2026-10-09 22:16:34.247319336 +0200
+@@ -22,5 +22,6 @@
+                       PhoshDBusScreenSaverSkeleton)
+ 
+ PhoshScreenSaverManager *phosh_screen_saver_manager_new (PhoshLockscreenManager *lockscreen_manager);
++void phosh_screen_saver_manager_volume_down_pressed (PhoshScreenSaverManager *self);
+ 
+ G_END_DECLS
+--- a/src/shell.c	2026-10-09 22:16:34.226490324 +0200
++++ b/src/shell.c	2026-10-09 22:17:01.687627617 +0200
+@@ -153,6 +153,7 @@
+   PhoshOsdWindow             *osd;
+   gint osd_timeoutid;
+   gboolean                    osd_continue;
++  gint64                      osd_suppress_until;
+ 
+   GtkWidget                  *notification_banner;
+ 
+@@ -1088,6 +1089,10 @@
+ {
+   PhoshShellPrivate *priv = phosh_shell_get_instance_private (self);
+ 
++  /* power + volume down: a screenshot */
++  if (g_strcmp0 (combo, "XF86AudioLowerVolume") == 0 && priv->screen_saver_manager)
++    phosh_screen_saver_manager_volume_down_pressed (priv->screen_saver_manager);
++
+   if (!phosh_calls_manager_has_incoming_call (priv->calls_manager))
+     return;
+ 
+@@ -2817,6 +2822,10 @@
+   g_debug ("DBus show osd: connector: %s icon: %s, label: %s, level %f/%f",
+            connector, icon, label, level, max_level);
+ 
++  /* a screenshot is being taken (power + volume down): no volume popup in it */
++  if (g_get_monotonic_time () < priv->osd_suppress_until)
++    return;
++
+   if (priv->osd) {
+     priv->osd_continue = TRUE;
+     g_object_set (priv->osd,
+@@ -2911,3 +2920,24 @@
+ }
+ 
+ /* }}} */
++
++
++/**
++ * phosh_shell_suppress_osd:
++ * @self: The shell
++ * @msec: For how long
++ *
++ * Closes the on screen display and keeps it closed for @msec, e.g. while a screenshot is taken.
++ */
++void
++phosh_shell_suppress_osd (PhoshShell *self, guint msec)
++{
++  PhoshShellPrivate *priv;
++
++  g_return_if_fail (PHOSH_IS_SHELL (self));
++  priv = phosh_shell_get_instance_private (self);
++
++  priv->osd_suppress_until = g_get_monotonic_time () + msec * G_TIME_SPAN_MILLISECOND;
++  if (priv->osd)
++    gtk_widget_destroy (GTK_WIDGET (priv->osd));
++}
+--- a/src/shell.h	2026-10-09 22:17:01.674520991 +0200
++++ b/src/shell.h	2026-10-09 22:17:01.687724247 +0200
+@@ -53,5 +53,6 @@
+ /* Created by the shell on startup */
+ PhoshLockscreenManager *phosh_shell_get_lockscreen_manager (PhoshShell *self);
+ PhoshScreenshotManager *phosh_shell_get_screenshot_manager (PhoshShell *self);
++void                phosh_shell_suppress_osd (PhoshShell *self, guint msec);
+ 
+ G_END_DECLS

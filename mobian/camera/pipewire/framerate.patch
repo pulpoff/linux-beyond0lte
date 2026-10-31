@@ -1,0 +1,49 @@
+--- a/spa/plugins/libcamera/libcamera-source.cpp	2026-10-15 04:17:50.618390385 +0200
++++ b/spa/plugins/libcamera/libcamera-source.cpp	2026-10-15 04:18:04.303164742 +0200
+@@ -634,6 +634,30 @@
+ 		spa_pod_builder_rectangle(&b, frameSize.width, frameSize.height);
+ 	}
+ 
++	/*
++	 * The frame rates the camera can run at, from FrameDurationLimits. Without a framerate in the format a
++	 * consumer whose caps carry one (an encoder: v4l2h264enc) failed to negotiate at all ("no more input
++	 * formats"), and the camera ran at whatever rate its mode defaulted to.
++	 */
++	if (auto fd = impl->camera->controls().find(&libcamera::controls::FrameDurationLimits);
++	    fd != impl->camera->controls().end()) {
++		const ControlInfo &ci = fd->second;
++		const int64_t minUs = ci.min().get<int64_t>(), maxUs = ci.max().get<int64_t>();
++		const int64_t defUs = ci.def().isArray() || ci.def().isNone() ? minUs : ci.def().get<int64_t>();
++		if (minUs > 0 && maxUs >= minUs) {
++			auto fps = [](int64_t us) {
++				return SPA_FRACTION(std::max<uint32_t>(1, (uint32_t)((1000000 + us / 2) / us)), 1);
++			};
++			struct spa_fraction def = fps(defUs), lo = fps(maxUs), hi = fps(minUs);
++			spa_pod_builder_prop(&b, SPA_FORMAT_VIDEO_framerate, 0);
++			spa_pod_builder_push_choice(&b, &f[1], SPA_CHOICE_Range, 0);
++			spa_pod_builder_fraction(&b, def.num, def.denom);
++			spa_pod_builder_fraction(&b, lo.num, lo.denom);
++			spa_pod_builder_fraction(&b, hi.num, hi.denom);
++			spa_pod_builder_pop(&b, &f[1]);
++		}
++	}
++
+ 	if (streamConfig.colorSpace) {
+ 		auto colorimetry = color_space_to_colorimetry(*streamConfig.colorSpace);
+ 
+@@ -673,6 +697,15 @@
+ 	case SPA_MEDIA_SUBTYPE_raw:
+ 		video_format = format->info.raw.format;
+ 		size = &format->info.raw.size;
++		/* the negotiated frame rate, if any, as the camera's frame duration from the start */
++		if (!try_only && format->info.raw.framerate.num > 0 &&
++		    impl->camera->controls().count(&libcamera::controls::FrameDurationLimits)) {
++			const int64_t us = (int64_t)1000000 * format->info.raw.framerate.denom /
++					   format->info.raw.framerate.num;
++			const int64_t limits[2] = { us, us };
++			impl->initial_controls.set(libcamera::controls::FrameDurationLimits,
++						   libcamera::Span<const int64_t, 2>(limits));
++		}
+ 		break;
+ 	case SPA_MEDIA_SUBTYPE_mjpg:
+ 	case SPA_MEDIA_SUBTYPE_jpeg:

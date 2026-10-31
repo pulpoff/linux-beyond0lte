@@ -1,0 +1,92 @@
+#!/usr/bin/env python3
+"""Inject touch/key input on the S10e via uinput (run as root).
+Coordinates are physical screen pixels, 1080x2280, same as gnome-screenshot output.
+  phone-input tap X Y
+  phone-input long X Y [ms]
+  phone-input dtap X Y [gapms]      (double tap)
+  phone-input swipe X1 Y1 X2 Y2 [ms]
+  phone-input drag X1 Y1 X2 Y2 [holdms] [movems] [endholdms]   (press, hold, move, hold, release — long-press drags)
+  phone-input key KEY_POWER|KEY_VOLUMEUP|...
+  phone-input type 'text'          (ASCII letters/digits/space via virtual keyboard)
+"""
+import sys, time
+from evdev import UInput, AbsInfo, ecodes as e
+
+W, H = 1080, 2280
+cap = {
+    e.EV_KEY: [e.BTN_TOUCH, e.KEY_POWER, e.KEY_VOLUMEUP, e.KEY_VOLUMEDOWN, e.KEY_ENTER, e.KEY_BACKSPACE,
+               e.KEY_SPACE, e.KEY_TAB, e.KEY_ESC, e.KEY_LEFTSHIFT, e.KEY_DOT, e.KEY_MINUS, e.KEY_SLASH, e.KEY_COMMA, e.KEY_APOSTROPHE, e.KEY_SEMICOLON,
+               e.KEY_EQUAL, e.KEY_LEFTBRACE, e.KEY_RIGHTBRACE, e.KEY_BACKSLASH, e.KEY_GRAVE, e.KEY_HOME, e.KEY_END, e.KEY_LEFT, e.KEY_RIGHT, e.KEY_UP, e.KEY_DOWN, e.KEY_DELETE]
+             + [getattr(e, 'KEY_' + c) for c in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'],
+    e.EV_ABS: [
+        (e.ABS_MT_SLOT, AbsInfo(0, 0, 9, 0, 0, 0)),
+        (e.ABS_MT_TRACKING_ID, AbsInfo(0, 0, 65535, 0, 0, 0)),
+        (e.ABS_MT_POSITION_X, AbsInfo(0, 0, W - 1, 0, 0, 0)),
+        (e.ABS_MT_POSITION_Y, AbsInfo(0, 0, H - 1, 0, 0, 0)),
+        (e.ABS_X, AbsInfo(0, 0, W - 1, 0, 0, 0)),
+        (e.ABS_Y, AbsInfo(0, 0, H - 1, 0, 0, 0)),
+    ],
+}
+ui = UInput(cap, name='yesman-virtual-touch', input_props=[e.INPUT_PROP_DIRECT])
+time.sleep(0.6)  # let libinput/mutter pick the device up
+
+tid = [1]
+def down(x, y):
+    ui.write(e.EV_ABS, e.ABS_MT_SLOT, 0)
+    ui.write(e.EV_ABS, e.ABS_MT_TRACKING_ID, tid[0]); tid[0] += 1
+    ui.write(e.EV_ABS, e.ABS_MT_POSITION_X, x); ui.write(e.EV_ABS, e.ABS_MT_POSITION_Y, y)
+    ui.write(e.EV_ABS, e.ABS_X, x); ui.write(e.EV_ABS, e.ABS_Y, y)
+    ui.write(e.EV_KEY, e.BTN_TOUCH, 1); ui.syn()
+def move(x, y):
+    ui.write(e.EV_ABS, e.ABS_MT_POSITION_X, x); ui.write(e.EV_ABS, e.ABS_MT_POSITION_Y, y)
+    ui.write(e.EV_ABS, e.ABS_X, x); ui.write(e.EV_ABS, e.ABS_Y, y); ui.syn()
+def up():
+    ui.write(e.EV_ABS, e.ABS_MT_TRACKING_ID, -1); ui.write(e.EV_KEY, e.BTN_TOUCH, 0); ui.syn()
+def key(code, hold=0.08):
+    ui.write(e.EV_KEY, code, 1); ui.syn(); time.sleep(hold); ui.write(e.EV_KEY, code, 0); ui.syn()
+
+PLAIN = {'.': e.KEY_DOT, '-': e.KEY_MINUS, '/': e.KEY_SLASH, ',': e.KEY_COMMA, "'": e.KEY_APOSTROPHE, ';': e.KEY_SEMICOLON,
+         '=': e.KEY_EQUAL, '[': e.KEY_LEFTBRACE, ']': e.KEY_RIGHTBRACE, '\\': e.KEY_BACKSLASH, '`': e.KEY_GRAVE}
+SHIFTED = {'@': e.KEY_2, '!': e.KEY_1, '#': e.KEY_3, '$': e.KEY_4, '%': e.KEY_5, '^': e.KEY_6, '&': e.KEY_7, '*': e.KEY_8,
+           '(': e.KEY_9, ')': e.KEY_0, '_': e.KEY_MINUS, '+': e.KEY_EQUAL, ':': e.KEY_SEMICOLON, '"': e.KEY_APOSTROPHE,
+           '<': e.KEY_COMMA, '>': e.KEY_DOT, '?': e.KEY_SLASH, '~': e.KEY_GRAVE, '{': e.KEY_LEFTBRACE, '}': e.KEY_RIGHTBRACE, '|': e.KEY_BACKSLASH}
+a = sys.argv[1:]
+cmd = a[0] if a else 'help'
+if cmd == 'tap':
+    down(int(a[1]), int(a[2])); time.sleep(0.08); up()
+elif cmd == 'dtap':
+    x, y = int(a[1]), int(a[2]); gap = int(a[3]) / 1000 if len(a) > 3 else 0.12
+    down(x, y); time.sleep(0.06); up(); time.sleep(gap); down(x, y); time.sleep(0.06); up()
+elif cmd == 'long':
+    down(int(a[1]), int(a[2])); time.sleep(int(a[3]) / 1000 if len(a) > 3 else 0.8); up()
+elif cmd == 'drag':
+    x1, y1, x2, y2 = map(int, a[1:5]); hold = int(a[5]) / 1000 if len(a) > 5 else 0.6; ms = int(a[6]) if len(a) > 6 else 400; endhold = int(a[7]) / 1000 if len(a) > 7 else 0.3
+    down(x1, y1); time.sleep(hold)
+    steps = max(8, ms // 8)
+    for i in range(1, steps + 1):
+        move(x1 + (x2 - x1) * i // steps, y1 + (y2 - y1) * i // steps); time.sleep(ms / 1000 / steps)
+    time.sleep(endhold); up()
+elif cmd == 'swipe':
+    x1, y1, x2, y2 = map(int, a[1:5]); ms = int(a[5]) if len(a) > 5 else 300
+    steps = max(8, ms // 8); down(x1, y1)
+    for i in range(1, steps + 1):
+        move(x1 + (x2 - x1) * i // steps, y1 + (y2 - y1) * i // steps); time.sleep(ms / 1000 / steps)
+    up()
+elif cmd == 'key':
+    key(getattr(e, a[1]))
+elif cmd == 'type':
+    for ch in a[1]:
+        if ch == ' ': key(e.KEY_SPACE)
+        elif ch == '\n': key(e.KEY_ENTER)
+        elif ch in PLAIN: key(PLAIN[ch])
+        elif ch in SHIFTED:
+            ui.write(e.EV_KEY, e.KEY_LEFTSHIFT, 1); ui.syn(); key(SHIFTED[ch]); ui.write(e.EV_KEY, e.KEY_LEFTSHIFT, 0); ui.syn()
+        elif ch.isalnum():
+            if ch.isupper(): ui.write(e.EV_KEY, e.KEY_LEFTSHIFT, 1); ui.syn()
+            key(getattr(e, 'KEY_' + ch.upper()))
+            if ch.isupper(): ui.write(e.EV_KEY, e.KEY_LEFTSHIFT, 0); ui.syn()
+        time.sleep(0.03)
+else:
+    print(__doc__); sys.exit(1)
+time.sleep(0.15)
+ui.close()

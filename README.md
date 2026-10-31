@@ -14,23 +14,32 @@ What works
 
 | Part | State |
 | --- | --- |
-| Display | 1080x2280 AMOLED (S6E3FA7) on DECON, taken over from the bootloader; brightness through `s10e_panel_bl` |
+| Display | 1080x2280 AMOLED (S6E3FA7) on DECON, taken over from the bootloader; brightness through `s10e_panel_bl`; calibrated "Natural" colour (the panel's mDNIe, set by the panel driver) |
 | GPU | Mali-G76 MP12 with panfrost, OpenGL ES 3.1, DVFS 156–702 MHz (simple_ondemand) |
 | Touchscreen | S6SY761 |
 | Wi-Fi | BCM4375 B1 on PCIe, 2.4 and 5 GHz (new Exynos 9820 PCIe driver, brcmfmac support for the 4375) |
 | Bluetooth | BCM4375 B1 on UART, Bluetooth LE included |
 | Sound | speaker and microphones through the CS47L93 codec and CS35L41 amps; media playback drives ABOX without its DSP firmware, calls use it |
-| Modem | Shannon CP boots from the phone's own `radio` partition; voice calls with audio, SMS receive, LTE registration |
+| Modem | Shannon CP boots from the phone's own `radio` partition; voice calls with audio, SMS, LTE data (`rmnet0`, ~47/34 Mbit/s), APN from the SIM |
 | Sensors | accelerometer (screen rotation), ambient light, proximity and compass through the BCM4775 sensor hub |
-| Video | MFC hardware decode |
-| USB | device mode (networking), host mode (USB 2) with Type-C orientation from the MAX77705 |
+| Cameras | rear wide S5K2L4 with AK7375 autofocus, rear ultra-wide S5K3P9, front S5K3J1, through a new CSIS/write-DMA driver and libcamera's software ISP (tuning in `mobian/camera/`) |
+| Video | MFC hardware decode: H.264, HEVC, VP9 |
+| DisplayPort | USB-C DP alt mode to HDMI docks: 1080p60/120 with audio, a second CRTC on DECON2, HDMI CEC through docks that tunnel it |
+| USB | device mode (networking), host mode with hubs, USB 3 SuperSpeed through docks, Type-C orientation from the MAX77705 |
 | Battery | MAX77705 charger and fuel gauge; Qi wireless charging at 5 V through the charger's WCIN input |
 | RTC | S2MPS19 real-time clock |
 | Buttons | power, volume, haptics |
 
-Not done: mobile data (the modem registers on LTE, the data path is missing), cameras, GPS,
-NFC, USB 3 SuperSpeed (the PHY trains, link polling does not finish yet), suspend (s2idle resets the SoC,
-so it is masked), CPU idle states, MFC encode, the flash LED, fast (10 V) wireless charging, Wireless PowerShare and DisplayPort.
+Not done: GPS, the fingerprint sensor (locked by the secure world), NFC, VoLTE, IPv6 on mobile data, the
+front camera's tuning, suspend (s2idle resets the SoC, so it is masked), CPU idle states, MFC encode, the flash
+LED, fast (10 V) wireless charging and Wireless PowerShare.
+
+Installing it
+=============
+
+`mobian/zip/` builds the LineageOS recovery zip (`adb sideload`): it moves the end of `userdata` into a 40 GiB
+`linux` partition, writes the root filesystem and U-Boot, formats Android's data on a first install, and
+reboots into Linux. `s10e-firstboot` then copies the phone's own firmware from `/vendor` (see Firmware).
 
 Booting it
 ==========
@@ -57,7 +66,8 @@ Changes for the Galaxy S10e
 On top of chiffathefox's Exynos 9820 tree (clocks, pinctrl, UFS, ACPM, the PMIC, simple display):
 
 * **Display:** `drivers/gpu/drm/tiny/exynos9820-decon-kms.c` keeps the bootloader's DECON/DSIM setup and
-  turns it into a real KMS device; `panel-samsung-s6e3fa7-beyond0.c`; simpledrm reports a DSI connector
+  turns it into a real KMS device; `panel-samsung-s6e3fa7-beyond0.c`, which also loads the panel's mDNIe
+  colour tables (Samsung's "Natural" mode: the bootloader leaves a violet-tinted one); simpledrm reports a DSI connector
   so Phosh treats the panel as built-in.
 * **GPU:** panfrost on the G76 (the G3D power domain stays on: re-powering it needs a secure-world
   restore that mainline does not do).
@@ -81,6 +91,14 @@ On top of chiffathefox's Exynos 9820 tree (clocks, pinctrl, UFS, ACPM, the PMIC,
   Exynos 9820 with orientation-aware lane setup; dwc3 quirks stock sets in GUSB3PIPECTL (elastic buffer
   mode, U-state exit in P1-P3, failed U1/U2 exit to Recovery).
 * **Video:** MFC v12 decode in s5p-mfc.
+* **Cameras:** `drivers/media/platform/samsung/exynos9820-csis/` (MIPI CSI-2 receivers, the PHYs and the write
+  DMA, as a V4L2 capture device), `drivers/media/i2c/s5k3p9.c` (data-driven: S5K2L4, S5K3P9 and S5K3J1, with
+  register tables), AK7375 changes for the wide camera's lens, the S2MPB02/S2MPB03 camera PMICs, and CMU_ISPPRE.
+  libcamera's simple pipeline and software ISP do the rest (`mobian/camera/libcamera-0.7.2-s10e.patch`).
+* **DisplayPort:** `drivers/gpu/drm/tiny/exynos9820-dp.c` (link controller, AUX, EDID, training, CEC over AUX)
+  as a bridge on a second CRTC (DECON2) in `exynos9820-decon-kms.c`; DP alt mode and HPD in `max77705.c`.
+* **USB hubs:** dwc3 on the 9820 resets GFLADJ with REFCLK_LPM_SEL set while no 24 MHz reference is there, so the
+  xHCI frame counter ran almost 3x too fast and every hub failed to enumerate; the bit is cleared now.
 * **Power:** MAX77705 charger and MAX17042-family fuel gauge changes, including the WCIN input the IDT
   wireless receiver feeds (selected, limited to 820 mA after a ramp from 480 mA as stock does, reported
   as online); S2MPS19 RTC and 32 kHz clock over
@@ -89,13 +107,15 @@ On top of chiffathefox's Exynos 9820 tree (clocks, pinctrl, UFS, ACPM, the PMIC,
 Firmware
 ========
 
-None is included; it comes from the phone's own Android (`/vendor/firmware`, `/vendor/etc`): the
-BCM4375 Wi-Fi firmware, CLM blob and NVRAM, the Bluetooth `.hcd`, `s5p-mfc-v13.fw`, the ABOX
-`calliope_*` files, and the sensor hub patch (`bbd_patch_file_beyond.h` in Samsung's kernel source,
-converted to text). The modem image is read from the `radio` partition at boot.
+None is in this tree. On the phone, `s10e-firstboot` copies it from the phone's own Android
+(`/vendor/firmware`) on the first boot: the BCM4375 Wi-Fi firmware, CLM blob and NVRAM, the Bluetooth `.hcd`,
+`s5p-mfc-v13.fw`, and the ABOX `calliope_*` and audio files. The sensor hub patch
+(`bbd_patch_file_beyond.h` in Samsung's kernel source, converted to text) is not on `/vendor`, so the release
+zip carries it. The modem image is read from the `radio` partition at boot.
 
 mobian/
 =======
 
 The userspace half: U-Boot's boot menu and the S10e device tree, the initramfs init, the kernel config,
-and the services and configuration the hardware needs on Mobian. See `mobian/README.md`.
+the services and configuration the hardware needs on Mobian, the recovery zip, the camera stack, and the
+Neo launcher and apps the image ships. See `mobian/README.md`.

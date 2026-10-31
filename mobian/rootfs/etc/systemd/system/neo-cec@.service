@@ -1,0 +1,11 @@
+[Unit]
+Description=HDMI CEC probe on %I
+BindsTo=dev-%i.device
+After=dev-%i.device
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+TimeoutStartSec=60
+ExecStart=/usr/local/sbin/neo-cec-probe %I
+ExecStop=-/usr/bin/cec-ctl -d /dev/%I --clear

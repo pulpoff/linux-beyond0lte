@@ -1,0 +1,73 @@
+#!/bin/sh
+# s10e-firstboot: what the public image cannot carry, copied from this phone's own partitions, read-only:
+#  - Samsung's firmware (audio DSP, Wi-Fi, Bluetooth, the video codec) from the vendor partition
+#  - the modem's NV data and its remote files from efs, into /var/lib/exynos-cp: the modem daemon only ever
+#    writes that copy, never efs
+# Drivers that probed before this ran found no firmware, so a boot that copied anything reboots once.
+# Runs every boot and does nothing once everything is in place.
+set -u
+FW=${FW:-/usr/lib/firmware}
+CP=${CP:-/var/lib/exynos-cp}
+copied=0
+log() { echo "s10e-firstboot: $*"; }
+
+V=/run/s10e-vendor
+mkdir -p $V
+if mount -t ext4 -o ro,noload /dev/disk/by-partlabel/vendor $V; then
+	S=$V/firmware
+	# cpf SRC DST: one file, unless it is there already
+	cpf() {
+		[ -s "$FW/$2" ] && return 0
+		[ -s "$S/$1" ] || { log "vendor has no firmware/$1"; return 1; }
+		mkdir -p "$(dirname "$FW/$2")"
+		cp "$S/$1" "$FW/$2.part" && mv "$FW/$2.part" "$FW/$2" && copied=1 && log "$2 (vendor firmware/$1)"
+	}
+	for f in $(cd $S && ls *_AUDIO_SLSI.bin calliope*.bin calliope*.dt rxse.bin txse*.bin SoundBoosterParam.bin 2>/dev/null); do
+		cpf $f $f
+	done
+	for f in bcm4375B1_murata.hcd bcm4375B1_semco.hcd bcm4375B1_semco_sem.hcd nvram.txt_CS01_semco_b1 nvram.txt_1rh_es43_b1; do
+		cpf $f brcm/$f
+	done
+	cpf bcmdhd_sta.bin_b1 brcm/brcmfmac4375b1-pcie.bin
+	cpf bcmdhd_clm.blob brcm/brcmfmac4375b1-pcie.clm_blob
+	cpf mfc_fw.bin s5p-mfc-v13.fw
+	umount $V
+else
+	log "cannot mount the vendor partition: no audio, Wi-Fi, Bluetooth or video decoding"
+fi
+# the names the drivers ask for
+[ -e $FW/brcm/BCM4362A2.hcd ] || ln -s bcm4375B1_semco.hcd $FW/brcm/BCM4362A2.hcd
+[ -e $FW/brcm/brcmfmac4375b1-pcie.txt ] || ln -s nvram.txt_CS01_semco_b1 $FW/brcm/brcmfmac4375b1-pcie.txt
+
+E=/dev/disk/by-partlabel/efs
+if [ ! -s $CP/nv_data.bin ] && [ -b $E ]; then
+	# debugfs opens efs read-only and never mounts it (a mount could replay its journal)
+	T=$CP/.seed
+	rm -rf $T; mkdir -p $T/rfs; chmod 700 $CP $T
+	debugfs -R "dump /nv_data.bin $T/nv_data.bin" $E 2>/dev/null
+	debugfs -R "dump /nv_data.bin.md5 $T/nv_data.bin.md5" $E 2>/dev/null
+	for f in $(debugfs -R "ls -p /root" $E 2>/dev/null | awk -F/ '$3 ~ /^10/ {print $6}'); do
+		debugfs -R "dump /root/$f $T/rfs/$f" $E 2>/dev/null
+	done
+	if [ "$(stat -c %s $T/nv_data.bin 2>/dev/null)" = 1048576 ]; then
+		cp $T/nv_data.bin $T/nv_data.bin.orig
+		mkdir -p $CP/rfs
+		mv $T/rfs/* $CP/rfs/ 2>/dev/null
+		mv $T/nv_data.bin.orig $T/nv_data.bin.md5 $CP/ 2>/dev/null
+		mv $T/nv_data.bin $CP/nv_data.bin
+		copied=1
+		log "modem NV data from efs"
+	else
+		log "efs has no usable nv_data.bin: no modem"
+	fi
+	rm -rf $T
+fi
+
+if [ $copied = 1 ]; then
+	log "rebooting once, so the drivers load what was copied"
+	sync
+	# the initramfs keeps a boot that never reached multi-user in its rescue shell: this one did not fail
+	rm -f /var/lib/s10e/boot-attempt
+	[ -n "${NOREBOOT:-}" ] || systemctl --no-block reboot
+fi
+exit 0

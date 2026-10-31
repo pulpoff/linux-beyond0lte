@@ -24,9 +24,22 @@ config DRM_ARCPGU
 
 	  If M is selected the module will be called arcpgu.
 
+config DRM_EXYNOS9820_DP
+	tristate "Exynos 9820 DisplayPort link controller (Galaxy S10e)"
+	depends on DRM && OF && (ARCH_EXYNOS || COMPILE_TEST)
+	depends on TYPEC_MAX77705=y
+	select DRM_DISPLAY_HELPER
+	select DRM_DISPLAY_DP_HELPER
+	select GENERIC_PHY
+	help
+	  The USB-C DisplayPort alt mode link: AUX, link training and the
+	  controller's own test video. Bring-up stage, driven from debugfs.
+
 config DRM_EXYNOS9820_DECON_KMS
 	tristate "Exynos 9820 DECON handover KMS (Galaxy S10e)"
 	depends on DRM && OF && (ARCH_EXYNOS || COMPILE_TEST)
+	depends on DRM_EXYNOS9820_DP || !DRM_EXYNOS9820_DP
+	select DRM_BRIDGE_CONNECTOR
 	select APERTURE_HELPERS
 	select DRM_CLIENT_SELECTION
 	select DRM_GEM_DMA_HELPER

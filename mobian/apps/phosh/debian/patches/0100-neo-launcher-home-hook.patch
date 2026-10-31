@@ -1,0 +1,409 @@
+Description: Neo launcher: the home gesture shows de.yesman.NeoLauncher
+ When the neo-launcher package is installed (schema de.yesman.neo), launcher=neo and the
+ launcher owns de.yesman.NeoLauncher on the session bus, unfolding the home calls its Show()
+ and folds the overview back (kept invisible while dragged). de.yesman.PhoshNeo.ShowOverview()
+ opens the overview once (Neo's recents). Otherwise Phosh behaves as before.
+Author: pulpoff <pashkovsky@gmail.com>
+Forwarded: no
+---
+diff --git a/src/home.c b/src/home.c
+index 9282179..d5b9786 100644
+--- a/src/home.c
++++ b/src/home.c
+@@ -92,9 +92,274 @@ struct _PhoshHome {
+   PhoshThumbnailOverlay *thumbnail_overlay;
+ 
+   gboolean         unfolding;
++
++  /* Neo launcher: in "neo" mode the home gesture shows de.yesman.NeoLauncher instead of the overview */
++  GSettings       *neo_settings;
++  guint            neo_owner_id;
++  guint            neo_watch_id;
++  guint            neo_registration_id;
++  GDBusConnection *neo_bus;
++  guint            neo_fold_id;
++  gboolean         neo_present;
++  gboolean         neo_allow_overview;
++  /* home-bar gesture in Neo mode: a swipe up goes home (Neo), a swipe up and hold goes to recents */
++  double           neo_drag_progress;
++  double           neo_drag_max;
++  gboolean         neo_hold;
++  guint            neo_hold_id;
+ };
+ G_DEFINE_TYPE (PhoshHome, phosh_home, PHOSH_TYPE_DRAG_SURFACE);
+ 
++#define NEO_SCHEMA       "de.yesman.neo"
++#define NEO_LAUNCHER_BUS "de.yesman.NeoLauncher"
++#define NEO_LAUNCHER_OBJ "/de/yesman/NeoLauncher"
++#define NEO_LAUNCHER_IF  "de.yesman.NeoLauncher.Home"
++#define NEO_PHOSH_BUS    "de.yesman.PhoshNeo"
++#define NEO_PHOSH_OBJ    "/de/yesman/PhoshNeo"
++
++static const char neo_phosh_xml[] =
++  "<node>"
++  "  <interface name='de.yesman.PhoshNeo'>"
++  "    <method name='ShowOverview'/>"
++  "    <method name='Fold'/>"
++  "    <signal name='WindowShown'><arg type='s' name='app_id'/></signal>"
++  "  </interface>"
++  "</node>";
++
++static void update_drag_handle (PhoshHome *self, gboolean queue_draw);
++static void neo_show_recents (PhoshHome *self);
++
++/* Neo takes the home gesture when the user chose it, it is running, and it did not ask for the overview itself */
++static gboolean
++neo_takes_home (PhoshHome *self)
++{
++  g_autofree char *launcher = NULL;
++
++  if (!self->neo_settings || !self->neo_present || self->neo_allow_overview)
++    return FALSE;
++
++  launcher = g_settings_get_string (self->neo_settings, "launcher");
++  return g_strcmp0 (launcher, "neo") == 0;
++}
++
++
++static void
++neo_show_launcher (void)
++{
++  g_autoptr (GDBusConnection) bus = g_bus_get_sync (G_BUS_TYPE_SESSION, NULL, NULL);
++
++  if (!bus)
++    return;
++
++  g_dbus_connection_call (bus, NEO_LAUNCHER_BUS, NEO_LAUNCHER_OBJ, NEO_LAUNCHER_IF, "Show",
++                          NULL, NULL, G_DBUS_CALL_FLAGS_NO_AUTO_START, -1, NULL, NULL, NULL);
++}
++
++
++static gboolean
++neo_fold_cb (gpointer data)
++{
++  PhoshHome *self = PHOSH_HOME (data);
++
++  self->neo_fold_id = 0;
++  if (self->state == PHOSH_HOME_STATE_UNFOLDED) {
++    /* the pin Phosh puts on an unfolded overview with no app was decided before Neo was there: decide again */
++    update_drag_handle (self, FALSE);
++    phosh_home_set_state (self, PHOSH_HOME_STATE_FOLDED);
++  }
++  return G_SOURCE_REMOVE;
++}
++
++
++static void
++on_neo_appeared (GDBusConnection *connection, const char *name, const char *owner, gpointer data)
++{
++  PhoshHome *self = PHOSH_HOME (data);
++
++  self->neo_present = TRUE;
++  /* Neo started after Phosh had already unfolded its grid (at login, or with no app open): hand over now,
++   * so only Neo is ever seen as the home screen */
++  /* or Neo (re)started while no app is open: the home screen is what should show, not an empty wallpaper */
++  if ((self->state == PHOSH_HOME_STATE_UNFOLDED ||
++       !phosh_overview_has_running_activities (self->overview)) && neo_takes_home (self)) {
++    neo_show_launcher ();
++    if (!self->neo_fold_id)
++      self->neo_fold_id = g_idle_add (neo_fold_cb, self);
++  }
++}
++
++
++/* The lock screen went away: the home Phosh unfolded behind it (no app open, or Neo appeared while locked, when
++ * the unmapped home could not fold) is handed to Neo now */
++static void
++on_neo_shell_locked (PhoshHome *self, GParamSpec *pspec, PhoshShell *shell)
++{
++  if (phosh_shell_get_locked (shell))
++    return;
++  if ((self->state == PHOSH_HOME_STATE_UNFOLDED ||
++       !phosh_overview_has_running_activities (self->overview)) && neo_takes_home (self)) {
++    neo_show_launcher ();
++    if (!self->neo_fold_id)
++      self->neo_fold_id = g_timeout_add (150, neo_fold_cb, self);
++  }
++}
++
++
++static void
++on_neo_vanished (GDBusConnection *connection, const char *name, gpointer data)
++{
++  PHOSH_HOME (data)->neo_present = FALSE;
++}
++
++
++static void
++neo_phosh_method_call (GDBusConnection       *connection,
++                       const char            *sender,
++                       const char            *object_path,
++                       const char            *interface_name,
++                       const char            *method_name,
++                       GVariant              *parameters,
++                       GDBusMethodInvocation *invocation,
++                       gpointer               data)
++{
++  PhoshHome *self = PHOSH_HOME (data);
++
++  if (g_strcmp0 (method_name, "ShowOverview") == 0) {
++    neo_show_recents (self);
++  } else if (g_strcmp0 (method_name, "Fold") == 0) {
++    phosh_home_set_state (self, PHOSH_HOME_STATE_FOLDED);
++  }
++  g_dbus_method_invocation_return_value (invocation, NULL);
++}
++
++
++/* Phosh's overview with the running apps only (Neo's recents): its app grid is Neo's job */
++static void
++neo_show_recents (PhoshHome *self)
++{
++  /* nothing runs: no empty task view, the home screen instead */
++  if (!phosh_overview_has_running_activities (self->overview)) {
++    neo_show_launcher ();
++    return;
++  }
++  self->neo_allow_overview = TRUE;
++  gtk_widget_set_visible (GTK_WIDGET (phosh_overview_get_app_grid (self->overview)), FALSE);
++  phosh_overview_set_neo_recents (self->overview, TRUE);
++  gtk_widget_set_opacity (GTK_WIDGET (self->overview), 1.0);
++  phosh_home_set_state (self, PHOSH_HOME_STATE_UNFOLDED);
++}
++
++
++static gboolean
++neo_recents_cb (gpointer data)
++{
++  PhoshHome *self = PHOSH_HOME (data);
++
++  self->neo_fold_id = 0;
++  neo_show_recents (self);
++  return G_SOURCE_REMOVE;
++}
++
++
++static gboolean
++neo_hold_cb (gpointer data)
++{
++  PhoshHome *self = PHOSH_HOME (data);
++
++  self->neo_hold_id = 0;
++  if (phosh_drag_surface_get_drag_state (PHOSH_DRAG_SURFACE (self)) != PHOSH_DRAG_SURFACE_STATE_DRAGGED ||
++      self->neo_drag_progress < 0.06 || !phosh_overview_has_running_activities (self->overview))
++    return G_SOURCE_REMOVE;
++  /* the finger rests with the bar pulled up: recents. The running apps fade in under the finger. */
++  self->neo_hold = TRUE;
++  gtk_widget_set_visible (GTK_WIDGET (phosh_overview_get_app_grid (self->overview)), FALSE);
++  phosh_overview_set_neo_recents (self->overview, TRUE);
++  /* the app's big drag thumbnail gives way to the cards at once (it shrank only with the finger's travel) */
++  g_clear_pointer (&self->thumbnail_overlay, phosh_cp_widget_destroy);
++  phosh_overview_set_active_activity_opacity (self->overview, 1.0);
++  gtk_widget_set_opacity (GTK_WIDGET (self->overview), 1.0);
++  return G_SOURCE_REMOVE;
++}
++
++
++static const GDBusInterfaceVTable neo_phosh_vtable = { neo_phosh_method_call, NULL, NULL, { 0 } };
++
++
++static void
++on_neo_bus_acquired (GDBusConnection *connection, const char *name, gpointer data)
++{
++  PhoshHome *self = PHOSH_HOME (data);
++  g_autoptr (GDBusNodeInfo) info = g_dbus_node_info_new_for_xml (neo_phosh_xml, NULL);
++
++  if (!info)
++    return;
++  g_set_object (&self->neo_bus, connection);
++  self->neo_registration_id = g_dbus_connection_register_object (connection, NEO_PHOSH_OBJ,
++                                                                 info->interfaces[0],
++                                                                 &neo_phosh_vtable,
++                                                                 self, NULL, NULL);
++}
++
++
++/* A window mapped or was activated: Neo keeps its launch animation up until the app it started is on screen */
++static void
++on_neo_toplevel (PhoshHome *self, PhoshToplevel *toplevel)
++{
++  const char *app_id = phosh_toplevel_get_app_id (toplevel);
++
++  if (!self->neo_bus || !self->neo_present || !phosh_toplevel_is_activated (toplevel))
++    return;
++  g_dbus_connection_emit_signal (self->neo_bus, NULL, NEO_PHOSH_OBJ, NEO_PHOSH_BUS, "WindowShown",
++                                 g_variant_new ("(s)", app_id ? app_id : ""), NULL);
++}
++
++
++static void
++neo_setup (PhoshHome *self)
++{
++  GSettingsSchemaSource *source = g_settings_schema_source_get_default ();
++  g_autoptr (GSettingsSchema) schema = NULL;
++
++  /* only with the neo-launcher package installed (it ships the schema) */
++  schema = source ? g_settings_schema_source_lookup (source, NEO_SCHEMA, TRUE) : NULL;
++  if (!schema)
++    return;
++
++  self->neo_settings = g_settings_new (NEO_SCHEMA);
++  self->neo_watch_id = g_bus_watch_name (G_BUS_TYPE_SESSION, NEO_LAUNCHER_BUS,
++                                         G_BUS_NAME_WATCHER_FLAGS_NONE,
++                                         on_neo_appeared, on_neo_vanished, self, NULL);
++  g_signal_connect_object (phosh_shell_get_default (), "notify::locked",
++                           G_CALLBACK (on_neo_shell_locked), self, G_CONNECT_SWAPPED);
++  g_signal_connect_object (phosh_shell_get_toplevel_manager (phosh_shell_get_default ()), "toplevel-added",
++                           G_CALLBACK (on_neo_toplevel), self, G_CONNECT_SWAPPED);
++  g_signal_connect_object (phosh_shell_get_toplevel_manager (phosh_shell_get_default ()), "toplevel-changed",
++                           G_CALLBACK (on_neo_toplevel), self, G_CONNECT_SWAPPED);
++  self->neo_owner_id = g_bus_own_name (G_BUS_TYPE_SESSION, NEO_PHOSH_BUS,
++                                       G_BUS_NAME_OWNER_FLAGS_REPLACE,
++                                       on_neo_bus_acquired, NULL, NULL, self, NULL);
++}
++
++
++static void
++neo_teardown (PhoshHome *self)
++{
++  g_autoptr (GDBusConnection) bus = NULL;
++
++  g_clear_handle_id (&self->neo_fold_id, g_source_remove);
++  g_clear_handle_id (&self->neo_hold_id, g_source_remove);
++  g_clear_handle_id (&self->neo_watch_id, g_bus_unwatch_name);
++  if (self->neo_registration_id) {
++    bus = g_bus_get_sync (G_BUS_TYPE_SESSION, NULL, NULL);
++    if (bus)
++      g_dbus_connection_unregister_object (bus, self->neo_registration_id);
++    self->neo_registration_id = 0;
++  }
++  g_clear_handle_id (&self->neo_owner_id, g_bus_unown_name);
++  g_clear_object (&self->neo_bus);
++  g_clear_object (&self->neo_settings);
++}
++
+ 
+ static void
+ phosh_home_update_home_bar (PhoshHome *self)
+@@ -170,8 +435,10 @@ update_drag_handle (PhoshHome *self, gboolean queue_draw)
+   gtk_event_controller_reset (GTK_EVENT_CONTROLLER (self->osk_toggle_long_press));
+ 
+   /* Update the handle's and dragability */
++  /* Phosh pins its overview open when no app runs; with Neo as the launcher the home must stay foldable */
+   if (phosh_overview_has_running_activities (self->overview) == FALSE &&
+-    self->state == PHOSH_HOME_STATE_UNFOLDED && drag_state != PHOSH_DRAG_SURFACE_STATE_DRAGGED) {
++    self->state == PHOSH_HOME_STATE_UNFOLDED && drag_state != PHOSH_DRAG_SURFACE_STATE_DRAGGED &&
++    !neo_takes_home (self)) {
+     drag_mode = PHOSH_DRAG_SURFACE_DRAG_MODE_NONE;
+   }
+   phosh_drag_surface_set_drag_mode (PHOSH_DRAG_SURFACE (self), drag_mode);
+@@ -599,6 +866,17 @@ phosh_home_dragged (PhoshDragSurface *drag_surface, int margin)
+ 
+   alpha = hdy_ease_out_cubic (progress);
+   phosh_home_set_background_alpha (self, alpha);
++
++  if (self->state != PHOSH_HOME_STATE_UNFOLDED && neo_takes_home (self)) {
++    if (ABS (progress - self->neo_drag_progress) > 0.015) {
++      /* still moving: the hold timer starts again */
++      g_clear_handle_id (&self->neo_hold_id, g_source_remove);
++      if (!self->neo_hold)
++        self->neo_hold_id = g_timeout_add (300, neo_hold_cb, self);
++    }
++    self->neo_drag_progress = progress;
++    self->neo_drag_max = MAX (self->neo_drag_max, progress);
++  }
+ }
+ 
+ 
+@@ -613,9 +891,23 @@ on_drag_state_changed (PhoshHome *self)
+ 
+   switch (drag_state) {
+   case PHOSH_DRAG_SURFACE_STATE_UNFOLDED:
++    g_clear_handle_id (&self->neo_hold_id, g_source_remove);
++    if (self->neo_hold) {
++      /* swipe up and hold: stay on the overview, as recents */
++      self->neo_hold = FALSE;
++      self->neo_drag_max = self->neo_drag_progress = 0;
++      self->neo_allow_overview = TRUE;
++    } else if (neo_takes_home (self)) {
++      /* Neo is the launcher: show it, and fold the (hidden) overview back right away */
++      neo_show_launcher ();
++      if (!self->neo_fold_id)
++        self->neo_fold_id = g_idle_add (neo_fold_cb, self);
++    }
+     state = PHOSH_HOME_STATE_UNFOLDED;
+     self->unfolding = FALSE;
+     kbd_interactivity = TRUE;
++    /* Neo's recents opened the overview: that permission is for this one unfold only */
++    self->neo_allow_overview = FALSE;
+     if (self->focus_app_search) {
+       phosh_overview_focus_app_search (self->overview);
+       self->focus_app_search = FALSE;
+@@ -625,8 +917,24 @@ on_drag_state_changed (PhoshHome *self)
+     g_clear_pointer (&self->thumbnail_overlay, phosh_cp_widget_destroy);
+     break;
+   case PHOSH_DRAG_SURFACE_STATE_FOLDED:
++    g_clear_handle_id (&self->neo_hold_id, g_source_remove);
++    if (self->neo_hold) {
++      /* held, then let go below Phosh's own threshold: recents all the same */
++      self->neo_hold = FALSE;
++      self->neo_drag_max = self->neo_drag_progress = 0;
++      if (!self->neo_fold_id)
++        self->neo_fold_id = g_idle_add (neo_recents_cb, self);
++    } else if (self->neo_drag_max > 0.03 && self->state == PHOSH_HOME_STATE_TRANSITION && neo_takes_home (self)) {
++      /* a short swipe up that Phosh lets snap back is still "home" */
++      neo_show_launcher ();
++    }
++    self->neo_drag_max = self->neo_drag_progress = 0;
+     state = PHOSH_HOME_STATE_FOLDED;
+     self->unfolding = FALSE;
++    self->neo_allow_overview = FALSE;
++    gtk_widget_set_opacity (GTK_WIDGET (self->overview), 1.0);
++    gtk_widget_set_visible (GTK_WIDGET (phosh_overview_get_app_grid (self->overview)), TRUE);
++    phosh_overview_set_neo_recents (self->overview, FALSE);
+     phosh_home_set_background_alpha (self, 0.0);
+     phosh_overview_set_active_activity_opacity (self->overview, 1.0);
+     g_clear_pointer (&self->thumbnail_overlay, phosh_cp_widget_destroy);
+@@ -635,6 +943,9 @@ on_drag_state_changed (PhoshHome *self)
+     state = PHOSH_HOME_STATE_TRANSITION;
+     if (self->state == PHOSH_HOME_STATE_FOLDED) {
+       self->unfolding = FALSE;
++      /* in Neo mode the overview stays invisible while the home bar is dragged up */
++      if (neo_takes_home (self))
++        gtk_widget_set_opacity (GTK_WIDGET (self->overview), 0.0);
+       phosh_overview_refresh (self->overview);
+       update_thumbnail_overlay_from_focused (self);
+     } else if (self->state == PHOSH_HOME_STATE_UNFOLDED) {
+@@ -744,6 +1055,8 @@ phosh_home_constructed (GObject *object)
+                            self,
+                            G_CONNECT_SWAPPED);
+   on_theme_name_changed (self, NULL, phosh_shell_get_style_manager (shell));
++
++  neo_setup (self);
+ }
+ 
+ 
+@@ -752,6 +1065,7 @@ phosh_home_dispose (GObject *object)
+ {
+   PhoshHome *self = PHOSH_HOME (object);
+ 
++  neo_teardown (self);
+   g_clear_object (&self->settings);
+ 
+   if (self->action_names) {
+@@ -915,6 +1229,15 @@ phosh_home_set_state (PhoshHome *self, PhoshHomeState state)
+   if (drag_state == PHOSH_DRAG_SURFACE_STATE_DRAGGED)
+     return;
+ 
++  /* Neo is the launcher: a request to open the home (no app left, login, the keybinding) shows Neo, and Phosh's
++   * grid is never unfolded for it. Only Neo's recents (ShowOverview) gets the overview. */
++  if (state == PHOSH_HOME_STATE_UNFOLDED && neo_takes_home (self)) {
++    neo_show_launcher ();
++    if (self->state == PHOSH_HOME_STATE_FOLDED)
++      return;
++    state = PHOSH_HOME_STATE_FOLDED;
++  }
++
+   state_name = g_enum_to_string (PHOSH_TYPE_HOME_STATE, state);
+   g_debug ("Setting state to %s", state_name);
+ 

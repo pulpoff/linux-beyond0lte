@@ -1322,7 +1322,8 @@ static int shub_get_sample(struct shub_sensor *s, u8 *out, unsigned int n)
 	.channel2 = IIO_MOD_##axis,					\
 	.address = idx,							\
 	.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),			\
-	.info_mask_shared_by_type = BIT(IIO_CHAN_INFO_SCALE),		\
+	.info_mask_shared_by_type = BIT(IIO_CHAN_INFO_SCALE) |		\
+				    BIT(IIO_CHAN_INFO_SAMP_FREQ),	\
 }
 
 static const struct iio_chan_spec shub_accel_channels[] = {
@@ -1400,6 +1401,10 @@ static int shub_read_raw(struct iio_dev *indio, struct iio_chan_spec const *chan
 		mutex_unlock(&h->io_lock);
 		return IIO_VAL_INT;
 	}
+	if (mask == IIO_CHAN_INFO_SAMP_FREQ) {
+		*val = 1000 / s->delay_ms;
+		return IIO_VAL_INT;
+	}
 	if (mask == IIO_CHAN_INFO_SCALE && chan->type == IIO_ACCEL) {
 		/* +-8 g at 4096 LSB/g */
 		*val = 0;
@@ -1434,8 +1439,26 @@ static int shub_read_raw(struct iio_dev *indio, struct iio_chan_spec const *chan
 	}
 }
 
+/* the rate the hub reports at (1-200 Hz); a running sensor is re-added with it */
+static int shub_write_raw(struct iio_dev *indio, struct iio_chan_spec const *chan,
+			  int val, int val2, long mask)
+{
+	struct shub_sensor *s = *(struct shub_sensor **)iio_priv(indio);
+	int ret = 0;
+
+	if (mask != IIO_CHAN_INFO_SAMP_FREQ || val < 1 || val > 200)
+		return -EINVAL;
+	mutex_lock(&s->hub->sens_lock);
+	s->delay_ms = max(1000 / val, 5);
+	if (s->enabled)
+		ret = shub_sensor_set(s, true);
+	mutex_unlock(&s->hub->sens_lock);
+	return ret;
+}
+
 static const struct iio_info shub_iio_info = {
 	.read_raw = shub_read_raw,
+	.write_raw = shub_write_raw,
 };
 
 static const struct iio_chan_spec shub_compass_channels[] = {

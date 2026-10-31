@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Compass
+Comment=Which way you are facing
+Exec=/opt/compass/de.yesman.Compass.js
+Icon=de.yesman.Compass
+Terminal=false
+Categories=Utility;
+StartupNotify=false
+X-Purism-FormFactor=Workstation;Mobile;

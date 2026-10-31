@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="de.yesman.neo" path="/de/yesman/neo/">
+    <key name="launcher" type="s">
+      <choices>
+        <choice value="phosh"/>
+        <choice value="neo"/>
+      </choices>
+      <default>'neo'</default>
+      <summary>Launcher</summary>
+      <description>Which home screen the home gesture opens: Phosh's own app grid or Neo. The patched Phosh
+      (phosh 0.58.0-1+neo1 or later) reads this key; Mobile Settings shows it on the device page.</description>
+    </key>
+    <key name="desktop-grid-columns" type="i">
+      <range min="3" max="8"/>
+      <default>4</default>
+      <summary>Home screen columns</summary>
+    </key>
+    <key name="desktop-grid-rows" type="i">
+      <range min="3" max="8"/>
+      <default>6</default>
+      <summary>Home screen rows</summary>
+    </key>
+    <key name="dock-num-icons" type="i">
+      <range min="2" max="8"/>
+      <default>4</default>
+      <summary>Dock icons</summary>
+    </key>
+    <key name="drawer-grid-columns" type="i">
+      <range min="3" max="8"/>
+      <default>4</default>
+      <summary>App drawer columns</summary>
+    </key>
+    <key name="home-widgets" type="b">
+      <default>true</default>
+      <summary>Home screen widgets</summary>
+      <description>The weather and an analog clock across the top two rows of the first page.</description>
+    </key>
+    <key name="desktop-hide-app-labels" type="b">
+      <default>false</default>
+      <summary>Hide labels on the home screen</summary>
+    </key>
+    <key name="icon-pack" type="s">
+      <default>'oneui'</default>
+      <summary>Icon pack</summary>
+      <description>Directory name of an icon pack under /usr/share/neo-launcher/iconpacks or
+      ~/.local/share/neo-launcher/iconpacks (pack.json, gnome-map.json, icons/); empty: the theme's icons.</description>
+    </key>
+    <key name="icon-shape" type="s">
+      <choices>
+        <choice value="system"/><choice value="circle"/><choice value="squircle"/><choice value="rounded"/>
+        <choice value="square"/><choice value="teardrop"/><choice value="cupertino"/><choice value="cylinder"/>
+        <choice value="egg"/><choice value="octagon"/><choice value="hexagon"/><choice value="diamond"/>
+      </choices>
+      <default>'system'</default>
+      <summary>Icon shape</summary>
+    </key>
+    <key name="icon-wrap-unthemed" type="b">
+      <default>true</default>
+      <summary>Wrap icons the pack does not cover in its own background</summary>
+    </key>
+    <key name="icon-shape-legacy" type="b">
+      <default>false</default>
+      <summary>Draw icons without pack art on a shaped background</summary>
+    </key>
+    <key name="search-drawer-enabled" type="b">
+      <default>false</default>
+      <summary>Search field at the top of the app drawer</summary>
+    </key>
+    <key name="hidden-from-home" type="as">
+      <default>[]</default>
+      <summary>Apps removed from the home screen (still in the drawer)</summary>
+    </key>
+    <key name="wallpaper-parallax" type="s">
+      <default>''</default>
+      <summary>Parallax wallpaper</summary>
+      <description>A directory with parallax.json and its layer pictures (back to front); the layers shift by their
+      depth as the phone tilts. Empty: the GNOME wallpaper, still.</description>
+    </key>
+      <key name="lock-type" type="s">
+      <choices>
+        <choice value="pin"/>
+        <choice value="pattern"/>
+        <choice value="swipe"/>
+      </choices>
+      <default>'pin'</default>
+      <summary>Screen lock</summary>
+      <description>pin: Phosh's keypad. pattern: a 3x3 dot grid on the lock screen, the dots in order are the password. swipe: no password (Phosh's require-unlock off).</description>
+    </key>
+</schema>
+</schemalist>

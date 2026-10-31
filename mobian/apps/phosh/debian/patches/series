@@ -1,0 +1,9 @@
+0100-neo-launcher-home-hook.patch
+0101-app-tracker-window-ends-startup.patch
+0102-neo-recents-cards.patch
+0103-neo-draws-recents.patch
+0104-power-volume-down-screenshot.patch
+0105-screenshot-hide-osd-not-destroy.patch
+0106-lockscreen-pattern-lock.patch
+0107-home-no-swipe-home-right-after-rotation.patch
+0109-settings-panels-open-neo-settings.patch

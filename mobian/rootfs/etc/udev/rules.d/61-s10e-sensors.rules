@@ -3,3 +3,5 @@
 SUBSYSTEM=="iio", ATTR{name}=="bcm4775-accel", ENV{ACCEL_MOUNT_MATRIX}="-1, 0, 0; 0, -1, 0; 0, 0, 1"
 # in_proximity_raw is the hub's own near (1) / far (0) decision
 SUBSYSTEM=="iio", ATTR{name}=="bcm4775-prox", ENV{PROXIMITY_NEAR_LEVEL}="1"
+# the launcher parallax asks for 60 Hz while it runs
+SUBSYSTEM=="iio", ATTR{name}=="bcm4775-accel", RUN+="/bin/chmod 0666 %S%p/in_accel_sampling_frequency"

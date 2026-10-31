@@ -134,6 +134,20 @@
  * at every PIPE3 init; the driver does the same and re-inits on a Type-C
  * orientation change.
  */
+/*
+ * USB-C DisplayPort alt mode (downstream exynos9820-beyond0lte_eur_open_25.dts
+ * dp,aux_sw_oe / dp,sbu_sw_sel / dp,usb_con_sel). The lane pair input is
+ * shared with the PHY.
+ */
+&displayport {
+	pinctrl-names = "default";
+	pinctrl-0 = <&dp_aux_en &dp_sbu_sel>;
+	aux-en-gpios = <&gpg1 6 GPIO_ACTIVE_LOW>;
+	sbu-sel-gpios = <&gpg4 0 GPIO_ACTIVE_HIGH>;
+	port-gpios = <&gpg0 4 GPIO_ACTIVE_HIGH>;
+	status = "okay";
+};
+
 &usbdrd_phy {
 	orientation-switch;
 	samsung,phy-port-gpios = <&gpg0 4 GPIO_ACTIVE_HIGH>;
@@ -281,6 +295,13 @@
 };
 
 &pinctrl_cmgp {
+	hsi2c42_bus: hsi2c42-bus-pins {
+		samsung,pins = "gpm6-0", "gpm7-0";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_3>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <0>;
+	};
+
 	amp_irq: amp-irq-pins {
 		samsung,pins = "gpm24-0";
 		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
@@ -351,6 +372,69 @@
 };
 
 &pinctrl_peric1 {
+	hsi2c0_bus: hsi2c0-bus-pins {
+		samsung,pins = "gpc0-0", "gpc0-1";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <0>;
+	};
+
+	hsi2c3_bus: hsi2c3-bus-pins {
+		samsung,pins = "gpc0-6", "gpc0-7";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <0>;
+	};
+
+	hsi2c21_bus: hsi2c21-bus-pins {
+		samsung,pins = "gpp5-2", "gpp5-3";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_3>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <0>;
+	};
+
+	cam_mclk0: cam-mclk0-pins {
+		samsung,pins = "gpc1-4";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <0>;
+	};
+
+	hsi2c1_bus: hsi2c1-bus-pins {
+		samsung,pins = "gpc0-2", "gpc0-3";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <0>;
+	};
+
+	cam_mclk3: cam-mclk3-pins {
+		samsung,pins = "gpc1-7";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <0>;
+	};
+
+	hsi2c2_bus: hsi2c2-bus-pins {
+		samsung,pins = "gpc0-4", "gpc0-5";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <0>;
+	};
+
+	cam_mclk1: cam-mclk1-pins {
+		samsung,pins = "gpc1-5";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <0>;
+	};
+
+	hsi2c24_bus: hsi2c24-bus-pins {
+		samsung,pins = "gpp6-0", "gpp6-1";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <0>;
+	};
+
 	hsi2c38_bus: hsi2c38-bus-pins {
 		samsung,pins = "gph0-6", "gph0-7";
 		samsung,pin-function = <EXYNOS_PIN_FUNC_3>;
@@ -434,6 +518,19 @@
 
 	bt_btwake: bt-btwake-pins {
 		samsung,pins = "gpg2-0";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+	};
+
+	/* DP AUX: the SBU switch's enable (active low) and its polarity select */
+	dp_aux_en: dp-aux-en-pins {
+		samsung,pins = "gpg1-6";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+	};
+
+	dp_sbu_sel: dp-sbu-sel-pins {
+		samsung,pins = "gpg4-0";
 		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
 		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
 	};
@@ -636,6 +733,325 @@
 				groups = "aif1";
 				function = "aif1";
 				bias-bus-hold;
+			};
+		};
+	};
+};
+
+/* rear ultrawide S5K3P9 (0x2d) and its EEPROM (0x51) */
+&usi_i2c_cam1 {
+	samsung,mode = <USI_MODE_I2C>;
+	status = "okay";
+};
+
+&hsi2c_1 {
+	clock-frequency = <400000>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&hsi2c1_bus>;
+	status = "okay";
+
+	camera@2d {
+		compatible = "samsung,s5k3p9";
+		reg = <0x2d>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&cam_mclk3>;
+		clocks = <&cmu_top CLK_DOUT_CMU_CIS_CLK3>;
+		reset-gpios = <&gpg0 3 GPIO_ACTIVE_LOW>;
+		vddext-supply = <&cam_vdd_ext>;
+		avdd-supply = <&cam_wide_avdd>;
+		dvdd-supply = <&cam_wide_dvdd>;
+		dovdd-supply = <&cam_wide_dovdd>;
+		orientation = <1>;
+
+		port {
+			wide_out: endpoint {
+				remote-endpoint = <&csis1_in>;
+				data-lanes = <1 2 3 4>;
+				link-frequencies = /bits/ 64 <1027000000>;
+			};
+		};
+	};
+};
+
+/* front S5K3J1 (0x10); its AF (0x0c) and EEPROM (0x51) are on hsi2c_21 */
+&usi_i2c_cam2 {
+	samsung,mode = <USI_MODE_I2C>;
+	status = "okay";
+};
+
+&hsi2c_2 {
+	clock-frequency = <400000>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&hsi2c2_bus>;
+	status = "okay";
+
+	camera@10 {
+		compatible = "samsung,s5k3j1";
+		reg = <0x10>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&cam_mclk1>;
+		clocks = <&cmu_top CLK_DOUT_CMU_CIS_CLK1>;
+		reset-gpios = <&gpg2 5 GPIO_ACTIVE_LOW>;
+		vddext-supply = <&cam_vdd_ext>;
+		afvdd-supply = <&cam_front_afvdd>;
+		avdd-supply = <&cam_front_avdd>;
+		dovdd-supply = <&cam_front_dovdd>;
+		dvdd-supply = <&cam_front_dvdd>;
+		orientation = <0>;
+		lens-focus = <&front_af>;
+
+		port {
+			front_out: endpoint {
+				remote-endpoint = <&csis2_in>;
+				data-lanes = <1 2 3 4>;
+				link-frequencies = /bits/ 64 <903500000>;
+			};
+		};
+	};
+};
+
+/* rear wide S5K2L4 (0x10) on I2C_CAM0, its AF (0x0c) and EEPROM (0x50) on I2C_CAM3 */
+&usi_i2c_cam0 {
+	samsung,mode = <USI_MODE_I2C>;
+	status = "okay";
+};
+
+&hsi2c_0 {
+	clock-frequency = <400000>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&hsi2c0_bus>;
+	status = "okay";
+
+	camera@10 {
+		compatible = "samsung,s5k2l4";
+		reg = <0x10>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&cam_mclk0>;
+		clocks = <&cmu_top CLK_DOUT_CMU_CIS_CLK0>;
+		reset-gpios = <&gpg2 6 GPIO_ACTIVE_LOW>;
+		vddret-supply = <&cam_main_vddret>;
+		avdd-supply = <&cam_main_avdd28>;
+		avdd2-supply = <&cam_main_avdd24>;
+		dvdd-supply = <&cam_main_dvdd>;
+		afvdd-supply = <&cam_rear_afvdd>;
+		dovdd-supply = <&cam_main_dovdd>;
+		vddq-supply = <&cam_main_vddq>;
+		orientation = <1>;
+		lens-focus = <&main_af>;
+
+		port {
+			main_out: endpoint {
+				remote-endpoint = <&csis0_in>;
+				data-lanes = <1 2 3 4>;
+				link-frequencies = /bits/ 64 <1027000000 1088750000>;
+			};
+		};
+	};
+};
+
+&usi_i2c_cam3 {
+	samsung,mode = <USI_MODE_I2C>;
+	status = "okay";
+};
+
+&hsi2c_3 {
+	clock-frequency = <400000>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&hsi2c3_bus>;
+	status = "okay";
+
+	main_af: lens@c {
+		compatible = "asahi-kasei,ak7374";
+		reg = <0x0c>;
+		vdd-supply = <&cam_rear_afvdd>;
+		vio-supply = <&cam_main_dovdd>;
+	};
+};
+
+/* the front camera's AF (0x0c) on USI08_I2C */
+&usi08_i2c {
+	samsung,mode = <USI_MODE_I2C>;
+	status = "okay";
+};
+
+&hsi2c_21 {
+	clock-frequency = <400000>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&hsi2c21_bus>;
+	status = "okay";
+
+	front_af: lens@c {
+		compatible = "asahi-kasei,ak7374";
+		reg = <0x0c>;
+		vdd-supply = <&cam_front_afvdd>;
+		vio-supply = <&cam_front_dovdd>;
+	};
+};
+
+/* S2MPB03 (0x56): the main camera's rails, on I2C_CMGP1 */
+&usi_i2c_cmgp1 {
+	samsung,mode = <USI_MODE_I2C>;
+	status = "okay";
+};
+
+&hsi2c_42 {
+	clock-frequency = <400000>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&hsi2c42_bus>;
+	status = "okay";
+
+	pmic@56 {
+		compatible = "samsung,s2mpb03";
+		reg = <0x56>;
+
+		regulators {
+			cam_main_dvdd: ldo1 {
+				regulator-name = "VDDD_1.0V_CAM";
+				regulator-min-microvolt = <1050000>;
+				regulator-max-microvolt = <1050000>;
+			};
+
+			cam_main_vddq: ldo2 {
+				regulator-name = "VDDQ_1.1V_CAM";
+				regulator-min-microvolt = <1100000>;
+				regulator-max-microvolt = <1100000>;
+			};
+
+			cam_main_dovdd: ldo3 {
+				regulator-name = "VDDIO_1.8V_CAM";
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <1800000>;
+			};
+
+			cam_main_vddret: ldo4 {
+				regulator-name = "VDDD_RET_1.0V_CAM";
+				regulator-min-microvolt = <1025000>;
+				regulator-max-microvolt = <1025000>;
+			};
+
+			cam_main_avdd24: ldo5 {
+				regulator-name = "VDDA_2.4V_CAM";
+				regulator-min-microvolt = <2400000>;
+				regulator-max-microvolt = <2400000>;
+			};
+
+			cam_main_avdd28: ldo6 {
+				regulator-name = "VDDA_2.8V_CAM";
+				regulator-min-microvolt = <2800000>;
+				regulator-max-microvolt = <2800000>;
+			};
+		};
+	};
+};
+
+&csis0 {
+	status = "okay";
+
+	port {
+		csis0_in: endpoint {
+			remote-endpoint = <&main_out>;
+			data-lanes = <1 2 3 4>;
+		};
+	};
+};
+
+/* rear ultrawide on CSIS1, front on CSIS2 */
+&csis1 {
+	status = "okay";
+
+	port {
+		csis1_in: endpoint {
+			remote-endpoint = <&wide_out>;
+			data-lanes = <1 2 3 4>;
+		};
+	};
+};
+
+&csis2 {
+	status = "okay";
+
+	port {
+		csis2_in: endpoint {
+			remote-endpoint = <&front_out>;
+			data-lanes = <1 2 3 4>;
+		};
+	};
+};
+
+/* S2MPB02 camera PMIC (0x59) */
+&usi10 {
+	samsung,mode = <USI_MODE_I2C>;
+	status = "okay";
+};
+
+&hsi2c_24 {
+	clock-frequency = <400000>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&hsi2c24_bus>;
+	status = "okay";
+
+	/*
+	 * Only the rails listed here are switched; the others (LDO17 for the
+	 * grip sensor, BUCK1, the buck-boost) keep what S-Boot set. Voltages
+	 * are the ones the PMIC already holds.
+	 */
+	pmic@59 {
+		compatible = "samsung,s2mpb02";
+		reg = <0x59>;
+
+		regulators {
+			cam_vdd_ext: buck2 {
+				regulator-name = "VDD_EXT_1P3_PB02";
+				regulator-min-microvolt = <1300000>;
+				regulator-max-microvolt = <1300000>;
+			};
+
+			cam_wide_dvdd: ldo4 {
+				regulator-name = "VDDD_1.05V_WIDESUB";
+				regulator-min-microvolt = <1050000>;
+				regulator-max-microvolt = <1050000>;
+			};
+
+			cam_wide_dovdd: ldo8 {
+				regulator-name = "VDDIO_1.8V_WIDESUB";
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <1800000>;
+			};
+
+			cam_front_dvdd: ldo5 {
+				regulator-name = "VDDD_1.05V_VT";
+				regulator-min-microvolt = <1050000>;
+				regulator-max-microvolt = <1050000>;
+			};
+
+			cam_front_dovdd: ldo6 {
+				regulator-name = "VDDIO_1.8V_VT";
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <1800000>;
+			};
+
+			cam_front_avdd: ldo13 {
+				regulator-name = "VDDA_2.95V_VT";
+				regulator-min-microvolt = <2950000>;
+				regulator-max-microvolt = <2950000>;
+			};
+
+			cam_front_afvdd: ldo16 {
+				regulator-name = "VDDAF_2.8V_VT";
+				regulator-min-microvolt = <2800000>;
+				regulator-max-microvolt = <2800000>;
+			};
+
+			cam_rear_afvdd: ldo14 {
+				regulator-name = "VDDAF_COMMON_CAM";
+				regulator-min-microvolt = <3300000>;
+				regulator-max-microvolt = <3300000>;
+			};
+
+			cam_wide_avdd: ldo15 {
+				regulator-name = "VDDA_2.8V_WIDESUB";
+				regulator-min-microvolt = <2800000>;
+				regulator-max-microvolt = <2800000>;
 			};
 		};
 	};

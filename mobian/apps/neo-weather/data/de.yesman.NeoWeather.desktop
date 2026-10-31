@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Weather
+Comment=The weather where you are
+Exec=neo-weather
+Icon=org.gnome.Weather
+Terminal=false
+Type=Application
+Categories=Utility;GTK;
+NoDisplay=true
+StartupNotify=true
+X-Purism-FormFactor=Workstation;Mobile;

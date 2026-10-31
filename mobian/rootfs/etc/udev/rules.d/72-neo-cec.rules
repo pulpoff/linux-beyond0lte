@@ -1,0 +1,1 @@
+SUBSYSTEM=="cec", KERNEL=="cec[0-9]*", TAG+="systemd", ENV{SYSTEMD_WANTS}+="neo-cec@%k.service"

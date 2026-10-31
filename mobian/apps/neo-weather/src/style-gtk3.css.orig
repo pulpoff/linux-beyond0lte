@@ -1,0 +1,29 @@
+/* the weather page (neo-weather.c): One UI Weather's layout over a sky for the weather now */
+window.neo-wx { color: white; }
+window.neo-wx-cloudy { background: linear-gradient(to bottom, #56637f 0%, #7f8ca8 30%, #3a4670 55%, #26305a 100%); }
+window.neo-wx-fog { background: linear-gradient(to bottom, #4a5578 0%, #93a0bc 30%, #3c4878 55%, #29336a 100%); }
+window.neo-wx-clear { background: linear-gradient(to bottom, #2f6fd0 0%, #6fb0ee 32%, #2c5aa8 58%, #1d3c7a 100%); }
+window.neo-wx-night { background: linear-gradient(to bottom, #0c1230 0%, #1f2a5c 32%, #141c44 60%, #0c1230 100%); }
+window.neo-wx-rain { background: linear-gradient(to bottom, #35415a 0%, #5d6b86 30%, #2c3654 58%, #1c2440 100%); }
+window.neo-wx-snow { background: linear-gradient(to bottom, #7d8ea8 0%, #b8c6da 30%, #5a6b8c 58%, #34436a 100%); }
+window.neo-wx-storm { background: linear-gradient(to bottom, #22263a 0%, #474b66 30%, #24283e 58%, #14172a 100%); }
+window.neo-wx scrolledwindow, window.neo-wx viewport { background: transparent; }
+.neo-wx-body { padding: 0 16px 24px 16px; }
+.neo-wx-bar { padding: 6px; }
+.neo-wx-bar button { color: white; }
+.neo-wx-head { padding: 52px 18px 8px 18px; }    /* no text-shadow: a blurred one is redrawn every scroll frame */
+.neo-wx-place { font-size: 26px; font-weight: bold; }
+.neo-wx-now { font-size: 96px; font-weight: bold; margin-top: 18px; }
+.neo-wx-cond { font-size: 26px; font-weight: bold; }
+.neo-wx-range { font-size: 17px; font-weight: bold; }
+.neo-wx-card { background: alpha(#1e2648, 0.72); border-radius: 26px; padding: 18px; }
+.neo-wx-card separator { background: alpha(white, 0.25); min-height: 1px; }
+.neo-wx-summary { font-size: 17px; font-weight: bold; }
+.neo-wx-dim { color: alpha(white, 0.75); font-size: 14px; }
+.neo-wx-small { font-size: 13px; font-weight: bold; color: alpha(white, 0.85); }
+.neo-wx-big { font-size: 18px; font-weight: bold; }
+.neo-wx-delta { font-size: 30px; font-weight: bold; }
+.neo-wx-day { font-size: 18px; font-weight: bold; }
+.neo-wx-yesterday { font-size: 18px; font-weight: bold; color: alpha(white, 0.75); }
+.neo-wx-detail { padding: 4px 6px; }
+.neo-wx-credit { font-size: 11px; color: alpha(white, 0.5); }

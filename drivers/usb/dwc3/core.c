@@ -1421,6 +1421,20 @@ int dwc3_core_init(struct dwc3 *dwc)
 	/* Adjust Reference Clock Period */
 	dwc3_ref_clk_period(dwc);
 
+	/*
+	 * Exynos resets GFLADJ with REFCLK_LPM_SEL set but runs ref_clk at a
+	 * rate GUCTL/GFLADJ don't describe: the microframe counter then runs
+	 * 2.78x fast (45 us), and every hub rejects its traffic with -EPROTO.
+	 */
+	if (!dwc->gfladj_refclk_lpm_sel && dwc->dev->parent &&
+	    of_device_is_compatible(dwc->dev->parent->of_node,
+				    "samsung,exynos850-dwusb3")) {
+		u32 fladj = dwc3_readl(dwc, DWC3_GFLADJ);
+
+		fladj &= ~DWC3_GFLADJ_REFCLK_LPM_SEL;
+		dwc3_writel(dwc, DWC3_GFLADJ, fladj);
+	}
+
 	dwc3_set_incr_burst_type(dwc);
 
 	dwc3_config_soc_bus(dwc);

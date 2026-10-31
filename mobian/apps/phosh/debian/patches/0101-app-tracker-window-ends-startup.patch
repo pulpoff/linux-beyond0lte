@@ -1,0 +1,79 @@
+Description: app-tracker: a launch is done once a window of the app is mapped
+ GTK4 and Qt apps confirm the startup id only through xdg-activation, which phoc reports
+ when it focuses the window; Settings and others then stayed behind the splash until the
+ 30 s timeout although they were up after a second.
+Author: pulpoff <pashkovsky@gmail.com>
+Forwarded: no
+---
+diff --git a/src/app-tracker.c b/src/app-tracker.c
+index a848613..91588ad 100644
+--- a/src/app-tracker.c
++++ b/src/app-tracker.c
+@@ -16,6 +16,7 @@
+ #include "phosh-wayland.h"
+ #include "shell-priv.h"
+ #include "toplevel-manager.h"
++#include "toplevel.h"
+ #include "phosh-marshalers.h"
+ #include "util.h"
+ 
+@@ -790,9 +791,59 @@ on_bus_get_finished (GObject *source_object, GAsyncResult *res, gpointer data)
+ }
+ 
+ 
++/*
++ * A launch is also complete once a window of that app is mapped. The startup id alone did not
++ * always arrive: GTK4 and Qt apps confirm it only through xdg-activation, which phoc reports when it
++ * focuses the window, and Settings, Yesman and others then sat behind the splash until its 30 s
++ * timeout although they were up after a second.
++ */
++static void
++on_toplevel_seen (PhoshAppTracker *self, PhoshToplevel *toplevel)
++{
++  g_autoptr (GDesktopAppInfo) info = NULL;
++  GHashTableIter iter;
++  gpointer key, value;
++  const char *app_id = phosh_toplevel_get_app_id (toplevel);
++
++  if (!app_id || !*app_id)
++    return;
++
++  info = phosh_get_desktop_app_info_for_app_id (app_id);
++  if (!info)
++    return;
++
++  g_hash_table_iter_init (&iter, self->apps);
++  while (g_hash_table_iter_next (&iter, &key, &value)) {
++    PhoshAppState *state = value;
++    g_autofree char *startup_id = NULL;
++
++    if (!state->info || !g_app_info_equal (G_APP_INFO (state->info), G_APP_INFO (info)))
++      continue;
++    if (state->state & PHOSH_APP_TRACKER_STATE_FLAG_WL_STARTUP_ID)
++      continue;
++
++    startup_id = g_strdup (key);
++    g_debug ("Window of '%s' is up: startup '%s' done", app_id, startup_id);
++    update_app_state (self, startup_id, PHOSH_APP_TRACKER_STATE_FLAG_WL_STARTUP_ID, 0);
++    g_signal_emit (self, signals[APP_READY], 0, state->info, startup_id);
++    g_hash_table_remove (self->apps, startup_id);
++    return;
++  }
++}
++
++
+ static gboolean
+ on_idle (PhoshAppTracker *self)
+ {
++  PhoshToplevelManager *toplevel_manager = phosh_shell_get_toplevel_manager (phosh_shell_get_default ());
++
++  if (toplevel_manager) {
++    g_signal_connect_object (toplevel_manager, "toplevel-added",
++                             G_CALLBACK (on_toplevel_seen), self, G_CONNECT_SWAPPED);
++    g_signal_connect_object (toplevel_manager, "toplevel-changed",
++                             G_CALLBACK (on_toplevel_seen), self, G_CONNECT_SWAPPED);
++  }
++
+   g_bus_get (G_BUS_TYPE_SESSION, self->cancel, on_bus_get_finished, self);
+ 
+   self->idle_id = 0;

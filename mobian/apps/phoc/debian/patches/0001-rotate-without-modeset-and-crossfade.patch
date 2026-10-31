@@ -1,0 +1,350 @@
+Index: phoc-0.58.0/src/output.c
+===================================================================
+--- phoc-0.58.0.orig/src/output.c
++++ phoc-0.58.0/src/output.c
+@@ -28,6 +28,7 @@
+ #include <wlr/backend/drm.h>
+ #include <wlr/config.h>
+ #include <wlr/render/swapchain.h>
++#include <wlr/render/wlr_texture.h>
+ #include <wlr/types/wlr_compositor.h>
+ #include <wlr/types/wlr_gamma_control_v1.h>
+ #include <wlr/types/wlr_output_layout.h>
+@@ -74,6 +75,9 @@ typedef struct _PhocOutputPrivate {
+ 
+   PhocLayoutTransaction *transaction;
+   gboolean modeset_shield;
++  gboolean rotation_fade;
++  /* The swapchain buffer last committed by phoc_output_draw (not locked: only read right away) */
++  struct wlr_buffer *last_buffer;
+ 
+   GSList  *blings;          /* (element-type: PhocBling) */
+   GSList  *debug_damage;    /* (element-type: PhocDebugDamageRegion) */
+@@ -131,6 +135,11 @@ on_transaction_active_changed (PhocOutpu
+     return;
+ 
+   priv->modeset_shield = FALSE;
++  if (priv->rotation_fade) {
++    priv->rotation_fade = FALSE;
++    phoc_output_lower_shield (self, PHOC_EASING_EASE_OUT_CUBIC, 320);
++    return;
++  }
+   phoc_output_lower_shield (self, PHOC_EASING_EASE_OUT_QUINT, 150);
+ }
+ 
+@@ -586,8 +595,10 @@ phoc_output_draw (PhocOutput *self)
+   if (self->fullscreen_view)
+     scanned_out = scan_out_fullscreen_view (self, self->fullscreen_view, &pending);
+ 
+-  if (scanned_out)
++  if (scanned_out) {
++    priv->last_buffer = NULL;
+     goto out;
++  }
+ 
+   if (!wlr_output_configure_primary_swapchain (wlr_output, &pending, &wlr_output->swapchain))
+     goto out;
+@@ -629,6 +640,8 @@ phoc_output_draw (PhocOutput *self)
+   if (!wlr_output_commit_state (wlr_output, &pending))
+     goto out;
+ 
++  priv->last_buffer = buffer;
++
+  out:
+   wlr_output_state_finish (&pending);
+ 
+@@ -730,6 +743,11 @@ phoc_output_handle_commit (struct wl_lis
+         !phoc_output_shield_is_raised (priv->shield)) {
+       phoc_output_raise_shield (self, FALSE);
+       priv->modeset_shield = TRUE;
++    } else if (priv->rotation_fade && !configure_sent) {
++      /* nothing to wait for: fade the old frame out right away */
++      priv->rotation_fade = FALSE;
++      phoc_output_raise_shield (self, FALSE);
++      phoc_output_lower_shield (self, PHOC_EASING_EASE_OUT_CUBIC, 320);
+     }
+     phoc_output_damage_whole (self);
+   }
+@@ -919,6 +937,7 @@ phoc_output_fill_state (PhocOutput
+ 
+       wlr_output_state_set_adaptive_sync_enabled (pending, enabled);
+     }
++
+   } else if (enable) {
+     enum wl_output_transform transform = WL_OUTPUT_TRANSFORM_NORMAL;
+     gboolean has_mode = FALSE;
+@@ -954,6 +973,54 @@ phoc_output_fill_state (PhocOutput
+ }
+ 
+ 
++/*
++ * The last frame, kept before a rotation commits: the shield shows it turned upright in place of black
++ * while clients re-layout, then grows and fades it away (on_transaction_active_changed). Its swapchain
++ * buffer stays locked meanwhile, so the swapchain draws into the others (reading it back cost ~0.1 s).
++ */
++static void
++phoc_output_snapshot_for_rotation (PhocOutput *self, enum wl_output_transform new_transform)
++{
++  PhocOutputPrivate *priv = phoc_output_get_instance_private (self);
++  struct wlr_output *wlr_output = self->wlr_output;
++  struct wlr_renderer *renderer = wlr_output->renderer;
++  struct wlr_texture *texture;
++  gboolean owned = FALSE;
++
++  /* turned again while the last turn still fades: the frame on screen is that fade (the old frame shrunk
++   * on black), so a snapshot of it would shrink again at every turn; turn the snapshot already up instead */
++  if (priv->shield &&
++      phoc_output_shield_turn_snapshot (priv->shield,
++                                        wlr_output_transform_compose (wlr_output_transform_invert (wlr_output->transform),
++                                                                      new_transform))) {
++    priv->rotation_fade = TRUE;
++    return;
++  }
++
++  if (!priv->last_buffer || !wlr_output->swapchain || !renderer)
++    return;
++
++  /* still one of the swapchain's buffers? (a new swapchain frees the old ones) */
++  for (size_t i = 0; i < WLR_SWAPCHAIN_CAP; i++)
++    owned |= wlr_output->swapchain->slots[i].buffer == priv->last_buffer;
++  if (!owned)
++    return;
++
++  texture = wlr_texture_from_buffer (renderer, priv->last_buffer);
++  if (!texture) {
++    g_debug ("No snapshot for the rotation of %s", wlr_output->name);
++    return;
++  }
++
++  if (priv->shield == NULL)
++    priv->shield = phoc_output_shield_new (self);
++  phoc_output_shield_set_snapshot (priv->shield, wlr_buffer_lock (priv->last_buffer), texture,
++                                   wlr_output_transform_compose (wlr_output_transform_invert (wlr_output->transform),
++                                                                 new_transform));
++  priv->rotation_fade = TRUE;
++}
++
++
+ static void
+ phoc_output_set_layout_pos (PhocOutput *self, PhocOutputConfig *output_config)
+ {
+@@ -1973,6 +2040,30 @@ phoc_output_config_head_to_output_config
+ }
+ 
+ 
++/*
++ * An output that stays on in the mode it has (a rotation, a new scale) needs no modeset: setting
++ * "enabled" and the same mode again makes wlroots do one anyway, and a DSI panel goes dark for it.
++ * Transform and scale are applied when rendering. Only for a change to a running output: the first
++ * commit (at startup) may well need the modeset. Returns whether the state was trimmed.
++ */
++static gboolean
++phoc_output_state_skip_modeset (PhocOutput *self, struct wlr_output_state *pending)
++{
++  struct wlr_output *wlr_output = self->wlr_output;
++
++  if (!wlr_output->enabled || !(pending->committed & WLR_OUTPUT_STATE_ENABLED) || !pending->enabled)
++    return FALSE;
++
++  if ((pending->committed & WLR_OUTPUT_STATE_MODE) &&
++      !(pending->mode_type == WLR_OUTPUT_STATE_MODE_FIXED && pending->mode == wlr_output->current_mode))
++    return FALSE;
++
++  pending->committed &= ~(WLR_OUTPUT_STATE_ENABLED | WLR_OUTPUT_STATE_MODE);
++  pending->allow_reconfiguration = false;
++  return TRUE;
++}
++
++
+ static gboolean
+ output_manager_apply_config (PhocDesktop                        *desktop,
+                              struct wlr_output_configuration_v1 *wlr_config_v1,
+@@ -2013,18 +2104,36 @@ output_manager_apply_config (PhocDesktop
+     PhocOutput *output = PHOC_OUTPUT (wlr_output->data);
+     struct wlr_output_state pending;
+     g_autoptr (PhocOutputConfig) oc = NULL;
++    gboolean trimmed, done;
+ 
+     if (!config_head->state.enabled)
+       continue;
+ 
+     oc = phoc_output_config_head_to_output_config (output, config_head);
+     phoc_output_fill_state (output, oc, &pending);
++    trimmed = phoc_output_state_skip_modeset (output, &pending);
++
++    if (!test_only && wlr_output->enabled &&
++        (pending.committed & WLR_OUTPUT_STATE_TRANSFORM) &&
++        pending.transform != wlr_output->transform)
++      phoc_output_snapshot_for_rotation (output, pending.transform);
+ 
+     if (test_only) {
+-      ok &= wlr_output_test_state (wlr_output, &pending);
++      done = wlr_output_test_state (wlr_output, &pending);
+     } else {
+-      ok &= wlr_output_commit_state (wlr_output, &pending);
++      done = wlr_output_commit_state (wlr_output, &pending);
++    }
++    if (!done && trimmed) {
++      /* the panel refused it (e.g. EBUSY with a page flip in flight): do it the stock way */
++      g_message ("Output '%s': changing it without a modeset failed, doing one", wlr_output->name);
++      wlr_output_state_finish (&pending);
++      phoc_output_fill_state (output, oc, &pending);
++      done = test_only ? wlr_output_test_state (wlr_output, &pending) :
++                         wlr_output_commit_state (wlr_output, &pending);
++    }
++    ok &= done;
+ 
++    if (!test_only) {
+       phoc_output_set_layout_pos (output, oc);
+ 
+       if (output->fullscreen_view)
+Index: phoc-0.58.0/src/output-shield.c
+===================================================================
+--- phoc-0.58.0.orig/src/output-shield.c
++++ phoc-0.58.0/src/output-shield.c
+@@ -18,6 +18,11 @@
+ 
+ #include "render-private.h"
+ 
++#include <wlr/render/pass.h>
++#include <wlr/render/wlr_texture.h>
++#include <wlr/util/transform.h>
++#include <wlr/types/wlr_buffer.h>
++
+ #define PHOC_ANIM_DURATION_SHIELD_MS 250 /* ms */
+ #define SPINNER_SIZE 32
+ 
+@@ -45,6 +50,11 @@ struct _PhocOutputShield {
+   PhocPropertyEaser  *easer;
+ 
+   gulong              render_end_id;
++  /* The output's last frame before a rotation (its buffer kept locked, no copy): shown turned upright
++   * in place of black, then grown and faded away */
++  struct wlr_buffer  *snapshot_buffer;
++  struct wlr_texture *snapshot;
++  enum wl_output_transform snapshot_transform;
+ };
+ 
+ static void phoc_output_shield_animatable_interface_init (PhocAnimatableInterface *iface);
+@@ -135,6 +145,9 @@ stop_render (PhocOutputShield *self)
+ {
+   PhocRenderer *renderer = phoc_server_get_renderer (phoc_server_get_default ());
+ 
++  g_clear_pointer (&self->snapshot, wlr_texture_destroy);
++  g_clear_pointer (&self->snapshot_buffer, wlr_buffer_unlock);
++
+   phoc_bling_unmap (PHOC_BLING (self->color_rect));
+   if (self->spinner)
+     phoc_bling_unmap (PHOC_BLING (self->spinner));
+@@ -151,6 +164,45 @@ on_render (PhocOutputShield *self, PhocR
+   if (self->output == NULL || self->output != ctx->output)
+     return;
+ 
++  if (self->snapshot) {
++    struct wlr_output *wlr_output = self->output->wlr_output;
++    float alpha = phoc_color_rect_get_alpha (self->color_rect);
++    float p = 1.0f - alpha;      /* 0 while raised, eased to 1 while lowering */
++    int W = wlr_output->width, H = wlr_output->height;
++    int iw = self->snapshot->width, ih = self->snapshot->height;
++    double fit, fill, s;
++
++    /* the old frame as the user now holds the phone: turned upright (in buffer pixels its sides swap) */
++    if (self->snapshot_transform % 2) {
++      int t = iw;
++      iw = ih;
++      ih = t;
++    }
++    /* first fitted inside the turned screen, then growing to fill it while it fades into the new layout */
++    fit = MIN ((double) W / iw, (double) H / ih);
++    fill = MAX ((double) W / iw, (double) H / ih);
++    s = fit + (fill - fit) * p;
++
++    wlr_render_pass_add_rect (ctx->render_pass, &(struct wlr_render_rect_options){
++        .box = { 0, 0, W, H },
++        .color = { 0, 0, 0, alpha },
++        .clip = ctx->damage,
++        .blend_mode = WLR_RENDER_BLEND_MODE_PREMULTIPLIED,
++      });
++    wlr_render_pass_add_texture (ctx->render_pass, &(struct wlr_render_texture_options){
++        .texture = self->snapshot,
++        .dst_box = { (W - iw * s) / 2, (H - ih * s) / 2, iw * s, ih * s },
++        .alpha = &alpha,
++        .transform = self->snapshot_transform,
++        .filter_mode = WLR_SCALE_FILTER_BILINEAR,
++        .clip = ctx->damage,
++      });
++    /* every frame of the fade redraws the whole output: the layout box the shield damages
++     * by is the one from before the rotation */
++    phoc_output_damage_whole (self->output);
++    return;
++  }
++
+   phoc_bling_render (PHOC_BLING (self->color_rect), ctx);
+   if (self->spinner)
+     phoc_bling_render (PHOC_BLING (self->spinner), ctx);
+@@ -353,6 +405,50 @@ phoc_output_shield_set_duration (PhocOut
+ }
+ 
+ /**
++ * phoc_output_shield_set_snapshot:
++ * @self: The shield
++ * @buffer: (transfer full) (nullable): A locked buffer holding the output's last frame
++ * @texture: (transfer full) (nullable): That buffer as a texture
++ * @transform: How to turn the frame so it looks upright on the output's new transform
++ *
++ * Shows the frame instead of black while the shield is up, and grows it as it fades.
++ */
++void
++phoc_output_shield_set_snapshot (PhocOutputShield         *self,
++                                 struct wlr_buffer        *buffer,
++                                 struct wlr_texture       *texture,
++                                 enum wl_output_transform  transform)
++{
++  g_assert (PHOC_IS_OUTPUT_SHIELD (self));
++
++  g_clear_pointer (&self->snapshot, wlr_texture_destroy);
++  g_clear_pointer (&self->snapshot_buffer, wlr_buffer_unlock);
++  self->snapshot = texture;
++  self->snapshot_buffer = buffer;
++  self->snapshot_transform = transform;
++}
++
++/**
++ * phoc_output_shield_turn_snapshot:
++ * @self: The shield
++ * @by: The turn from the output's current transform to its new one
++ *
++ * Turns the frame shown while the shield is up along with the output.
++ *
++ * Returns: Whether there is such a frame
++ */
++gboolean
++phoc_output_shield_turn_snapshot (PhocOutputShield *self, enum wl_output_transform by)
++{
++  g_assert (PHOC_IS_OUTPUT_SHIELD (self));
++
++  if (!self->snapshot)
++    return FALSE;
++  self->snapshot_transform = wlr_output_transform_compose (self->snapshot_transform, by);
++  return TRUE;
++}
++
++/**
+  * phoc_output_shield_is_raised:
+  * @self: The shield
+  *
+Index: phoc-0.58.0/src/output-shield.h
+===================================================================
+--- phoc-0.58.0.orig/src/output-shield.h
++++ phoc-0.58.0/src/output-shield.h
+@@ -27,4 +27,10 @@ void                phoc_output_shield_s
+ void                phoc_output_shield_set_duration              (PhocOutputShield *self,
+                                                                   guint             duration);
+ gboolean            phoc_output_shield_is_raised                 (PhocOutputShield *self);
++gboolean            phoc_output_shield_turn_snapshot             (PhocOutputShield         *self,
++                                                                  enum wl_output_transform  by);
++void                phoc_output_shield_set_snapshot              (PhocOutputShield         *self,
++                                                                  struct wlr_buffer        *buffer,
++                                                                  struct wlr_texture       *texture,
++                                                                  enum wl_output_transform  transform);
+ G_END_DECLS

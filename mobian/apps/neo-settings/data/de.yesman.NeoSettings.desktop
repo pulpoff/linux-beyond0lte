@@ -1,0 +1,12 @@
+[Desktop Entry]
+Name=Settings
+Comment=Phone settings
+Exec=neo-settings
+Icon=org.gnome.Settings
+Terminal=false
+Type=Application
+Categories=Settings;GTK;
+Keywords=preferences;settings;wifi;display;wallpaper;
+StartupNotify=true
+DBusActivatable=true
+X-Purism-FormFactor=Workstation;Mobile;

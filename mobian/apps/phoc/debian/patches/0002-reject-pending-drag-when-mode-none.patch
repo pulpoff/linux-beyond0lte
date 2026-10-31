@@ -1,0 +1,22 @@
+Description: reject a pending drag once the client sets drag mode NONE
+ Neo turns dragging off when a long press picks up an icon; the touch began while dragging was on,
+ so without this phoc took the icon's vertical move as a drawer drag.
+Forwarded: no
+---
+--- a/src/layer-shell-effects.c	2026-10-30 13:48:43.370461636 +0100
++++ b/src/layer-shell-effects.c	2026-10-30 13:48:43.390979647 +0100
+@@ -1474,6 +1474,14 @@
+     return drag_surface->state;
+   }
+ 
++  /* The client turned dragging off after the touch began (a long press that picks up an icon): a gesture
++   * that is not ours yet goes back to the client */
++  if (drag_surface->current.drag_mode == ZPHOC_DRAGGABLE_LAYER_SURFACE_V1_DRAG_MODE_NONE &&
++      drag_surface->state == PHOC_DRAGGABLE_SURFACE_STATE_PENDING) {
++    apply_state (drag_surface, PHOC_DRAGGABLE_SURFACE_STATE_REJECTED);
++    return drag_surface->state;
++  }
++
+   if (phoc_draggable_surface_is_vertical (drag_surface)) {
+     drag_surface->drag.pending_accept = off_y;
+     drag_surface->drag.pending_reject = off_x;

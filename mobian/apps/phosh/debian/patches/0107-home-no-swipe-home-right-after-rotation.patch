@@ -1,0 +1,94 @@
+From: pulpoff <pashkovsky@gmail.com>
+Subject: home: a drag that ends right after the screen rotates goes nowhere
+
+The screen turning resizes and moves the home bar surface, and the drag surface read
+that as a short drag of the bar: Neo was told "home" and covered the app the user
+was holding (most often after the second or third turn). A drag that ends within a
+second of a rotation no longer goes home; an unfolded home folds back unseen.
+---
+--- a/src/home.c
++++ b/src/home.c
+@@ -108,9 +108,13 @@
+   double           neo_drag_max;
+   gboolean         neo_hold;
+   guint            neo_hold_id;
++  guint            neo_transform;
++  gint64           neo_rotated_at;
+ };
+ G_DEFINE_TYPE (PhoshHome, phosh_home, PHOSH_TYPE_DRAG_SURFACE);
+ 
++static gboolean neo_just_rotated (PhoshHome *self);
++
+ #define NEO_SCHEMA       "de.yesman.neo"
+ #define NEO_LAUNCHER_BUS "de.yesman.NeoLauncher"
+ #define NEO_LAUNCHER_OBJ "/de/yesman/NeoLauncher"
+@@ -993,6 +997,11 @@
+       neo_emit (self, "RecentsEnd", g_variant_new ("(s)", "recents"));
+       if (!self->neo_fold_id)
+         self->neo_fold_id = g_idle_add (neo_fold_cb, self);
++    } else if (neo_takes_home (self) && neo_just_rotated (self)) {
++      /* the screen turned under it: no swipe home, fold back unseen */
++      self->neo_drag_max = self->neo_drag_progress = 0;
++      if (!self->neo_fold_id)
++        self->neo_fold_id = g_idle_add (neo_fold_cb, self);
+     } else if (neo_takes_home (self)) {
+       neo_emit (self, "RecentsEnd", g_variant_new ("(s)", "home"));
+       /* Neo is the launcher: show it, and fold the (hidden) overview back right away */
+@@ -1019,7 +1028,8 @@
+       /* held, then let go below Phosh's own threshold: the task view all the same */
+       self->neo_hold = FALSE;
+       neo_emit (self, "RecentsEnd", g_variant_new ("(s)", "recents"));
+-    } else if (self->neo_drag_max > 0.03 && self->state == PHOSH_HOME_STATE_TRANSITION && neo_takes_home (self)) {
++    } else if (self->neo_drag_max > 0.03 && self->state == PHOSH_HOME_STATE_TRANSITION && neo_takes_home (self) &&
++               !neo_just_rotated (self)) {
+       /* a short swipe up that Phosh lets snap back is still "home" */
+       neo_emit (self, "RecentsEnd", g_variant_new ("(s)", "home"));
+       neo_show_launcher ();
+@@ -1074,6 +1084,32 @@
+ }
+ 
+ 
++/*
++ * The screen turning resizes and moves the home bar's surface, and the drag surface read that as a short drag of the
++ * bar: a "swipe home" over the app the user was holding (most often after the second or third turn). A drag that
++ * ends within a second of a rotation goes nowhere.
++ */
++#define NEO_ROTATE_GUARD_US (1000 * G_TIME_SPAN_MILLISECOND)
++
++static gboolean
++neo_just_rotated (PhoshHome *self)
++{
++  return self->neo_rotated_at && g_get_monotonic_time () - self->neo_rotated_at < NEO_ROTATE_GUARD_US;
++}
++
++
++static void
++on_neo_monitor_configured (PhoshHome *self, PhoshMonitor *monitor)
++{
++  guint transform = phosh_monitor_get_transform (monitor);
++
++  if (transform == self->neo_transform)
++    return;
++  self->neo_transform = transform;
++  self->neo_rotated_at = g_get_monotonic_time ();
++}
++
++
+ static void
+ phosh_home_add_background (PhoshHome *self)
+ {
+@@ -1154,6 +1190,14 @@
+                            G_CONNECT_SWAPPED);
+   on_theme_name_changed (self, NULL, phosh_shell_get_style_manager (shell));
+ 
++  if (phosh_shell_get_primary_monitor (shell)) {
++    PhoshMonitor *monitor = phosh_shell_get_primary_monitor (shell);
++
++    self->neo_transform = phosh_monitor_is_configured (monitor) ? phosh_monitor_get_transform (monitor) : 0;
++    g_signal_connect_object (monitor, "configured", G_CALLBACK (on_neo_monitor_configured), self,
++                             G_CONNECT_SWAPPED);
++  }
++
+   neo_setup (self);
+ }
+ 

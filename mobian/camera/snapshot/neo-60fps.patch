@@ -1,0 +1,14 @@
+--- a/aperture/src/lib.rs
++++ b/aperture/src/lib.rs
+@@ -38,8 +38,9 @@ pub use viewfinder::Viewfinder;
+ pub(crate) static APP_ID: OnceLock<&'static str> = OnceLock::new();
+ pub(crate) const SUPPORTED_ENCODINGS: [&str; 2] = ["video/x-raw", "image/jpeg"];
+ pub(crate) const PREFERRED_FORMATS: [&str; 5] = ["I420", "BGRx", "RGBx", "xBGR", "xRGB"];
+-/// The maximum framerate, in frames per second.
+-pub(crate) const MAXIMUM_RATE: i32 = 30;
++/// The maximum framerate, in frames per second. 60 on the POCO: every camera has a 60 fps video mode, and with
++/// frame rates advertised (PipeWire libcamera, Neo patch) a 30 cap would halve them.
++pub(crate) const MAXIMUM_RATE: i32 = 60;
+ 
+ /// Supported caps for the app, already frame capped.
+ pub(crate) static SUPPORTED_CAPS: LazyLock<gst::Caps> = LazyLock::new(|| {

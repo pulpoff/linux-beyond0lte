@@ -15,6 +15,8 @@
 //   /dev/umts_ipc0   Samsung IPC frames (rild's channel 235)
 //   /dev/umts_ipc1   the second IPC channel (236)
 //   /dev/umts_rfs0   the CP's remote file system requests (channel 245)
+//   rmnet0           raw-IP packet data (PS channel 10..17 on rings 8/9 and the
+//                    pktproc DL queue in modem_spare)
 //   /dev/wwan0at0    a WWAN AT port for ModemManager. The CP does not speak AT;
 //                    the port is bridged to /dev/umts_atbridge, where the
 //                    userspace daemon translates AT to Samsung IPC.
@@ -30,11 +32,13 @@
 #include <linux/bitfield.h>
 #include <linux/delay.h>
 #include <linux/fs.h>
+#include <linux/if_arp.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/mfd/syscon.h>
 #include <linux/miscdevice.h>
 #include <linux/module.h>
+#include <linux/netdevice.h>
 #include <linux/of.h>
 #include <linux/of_reserved_mem.h>
 #include <linux/platform_device.h>
@@ -152,6 +156,40 @@
 #define IPC_CLK_TABLE			0x28
 #define CP_NUM_IODS			3
 
+/*
+ * PS data (kit/modem/PS-DATA-SPEC.md). rmnet0..7 are SIPC channels 10..17; they
+ * share ring 8 (hiprio) and ring 9 (multipdp), raw IP per slot with the channel
+ * in size_v bits 23:16. DL also arrives through pktproc: a descriptor queue in
+ * modem_spare (AP 0xd0000000 = CP 0x50000000) that the CP fills and the AP
+ * returns by advancing rear_ptr.
+ */
+#define PS_CH_FIRST			10
+#define PS_CH_LAST			17
+#define PS_UL_LINK			9		/* multipdp */
+#define PS_MTU				1500
+#define SPARE_PHYS			0xd0000000
+#define SPARE_SIZE			0x1600000
+#define SPARE_CP_BASE			0x50000000
+#define PP_DESC_BASE			0x100		/* gdesc: desc_base, num, data_base, fore, rear */
+#define PP_NUM				8192
+#define PP_DESC_SIZE			24		/* data_addr u32 @0, length u16 @16, channel u8 @18 */
+#define PP_DATA_BASE			0x100000
+#define PP_DATA_END			0x1100000
+/*
+ * Ring 9 DL is zerocopy: the AP hands the CP empty buffers in the ZMB area of
+ * modem_spare, as u64 offsets from the IPC base (+ the 0x5f00000 the stock
+ * LINEAR_WA layout puts before it), advancing dl_rp; the CP fills them and
+ * advances dl_wp. Slot n always gets cell n.
+ */
+#define ZMB_OFF				0x1100000	/* in modem_spare */
+#define ZMB_CELL			0xa00
+#define ZMB_HEADROOM			130		/* NET_SKB_PAD + NET_IP_ALIGN */
+#define ZMB_SHMEM_SIZE			0x5f00000
+
+static unsigned int ps_ul_ch = PS_CH_FIRST;
+module_param(ps_ul_ch, uint, 0644);
+MODULE_PARM_DESC(ps_ul_ch, "SIPC channel rmnet0 sends on (10 = PDP cid 1 [guess])");
+
 /* the channels userspace gets, with their ring (link id) */
 static const struct {
 	const char *name;
@@ -166,6 +204,7 @@ enum { UL, DL };
 
 struct cp_link_cfg {
 	u8 ch;
+	bool ps;		/* raw IP slots, not SIPC5 frames */
 	bool zerocopy_dl;	/* DL buffers are handed out by the AP */
 	u16 len[2];
 	u16 size[2];
@@ -173,16 +212,16 @@ struct cp_link_cfg {
 
 /* stock DT io_device_0..17 that get a ring, in order (ids 0..9) */
 static const struct cp_link_cfg cp_links[] = {
-	{  35, false, {  16,   16 }, { 2048, 2048 } },	/* umts_cass */
-	{ 235, false, {  16,   32 }, { 4096, 4096 } },	/* umts_ipc0 */
-	{ 236, false, {  16,   32 }, { 4096, 4096 } },	/* umts_ipc1 */
-	{ 245, false, {  16,  512 }, { 2048, 2048 } },	/* umts_rfs0 */
-	{   1, false, {  32,   64 }, { 2048, 2048 } },	/* umts_csd */
-	{  25, false, {  16,   16 }, { 2048, 2048 } },	/* umts_router */
-	{  28, false, {  16,  128 }, { 2048, 2048 } },	/* umts_dm0 */
-	{ 244, false, {  16,   32 }, { 2048, 2048 } },	/* ipc_loopback0 */
-	{  10, false, { 256,  256 }, { 2048, 2048 } },	/* multipdp_hiprio */
-	{  11, true,  { 512, 1024 }, { 2048,    8 } },	/* multipdp */
+	{  35, false, false, {  16,   16 }, { 2048, 2048 } },	/* umts_cass */
+	{ 235, false, false, {  16,   32 }, { 4096, 4096 } },	/* umts_ipc0 */
+	{ 236, false, false, {  16,   32 }, { 4096, 4096 } },	/* umts_ipc1 */
+	{ 245, false, false, {  16,  512 }, { 2048, 2048 } },	/* umts_rfs0 */
+	{   1, false, false, {  32,   64 }, { 2048, 2048 } },	/* umts_csd */
+	{  25, false, false, {  16,   16 }, { 2048, 2048 } },	/* umts_router */
+	{  28, false, false, {  16,  128 }, { 2048, 2048 } },	/* umts_dm0 */
+	{ 244, false, false, {  16,   32 }, { 2048, 2048 } },	/* ipc_loopback0 */
+	{  10, true,  false, { 256,  256 }, { 2048, 2048 } },	/* multipdp_hiprio */
+	{  11, true,  true,  { 512, 1024 }, { 2048,    8 } },	/* multipdp */
 };
 #define CP_NUM_LINKS			ARRAY_SIZE(cp_links)
 
@@ -191,6 +230,7 @@ struct cp_ring {
 	u32 buff;		/* offsets into the IPC region */
 	u32 addr_v, size_v;
 	u32 rp, wp;		/* offsets of the u16 pointers */
+	u16 zc_rd;		/* zerocopy DL: next slot to read */
 	/* RX reassembly of a frame that spans slots */
 	u8 *frm;
 	unsigned int total, rcvd;
@@ -270,6 +310,12 @@ struct exynos_cp {
 	struct mutex tx_lock;
 	void __iomem *etdac_otp;
 	unsigned long rx_frames, rx_dropped;
+
+	/* PS data */
+	void *spare;		/* modem_spare, write-combined (pktproc) */
+	struct net_device *ps_dev;
+	spinlock_t ps_tx_lock;	/* ring 9 UL, from ndo_start_xmit */
+	bool ps_ch_seen[PS_CH_LAST - PS_CH_FIRST + 1];
 
 	/* WWAN AT port <-> /dev/umts_atbridge */
 	struct wwan_port *at_port;
@@ -484,6 +530,25 @@ static void cp_sbd_init(struct exynos_cp *cp)
 			writel(rb->addr_v, ipc + SBD_RB_CH + i * 16 + d * 8 + 4);
 		}
 	}
+	if (cp->spare) {
+		void __iomem *sp = (void __iomem __force *)cp->spare;
+		struct cp_ring *zc = &cp->ring[PS_UL_LINK][DL];
+
+		/* every zerocopy DL slot but one gets its cell; dl_rp = how far we fed */
+		for (j = 0; j < zc->len; j++)
+			writeq(ZMB_SHMEM_SIZE + j * ZMB_CELL + ZMB_HEADROOM,
+			       ipc + zc->buff + j * 8);
+		zc->zc_rd = 0;
+		writew(zc->len - 1, ipc + zc->rp);
+		writew(0, ipc + zc->wp);
+
+		memset_io(sp + PP_DESC_BASE, 0, PP_NUM * PP_DESC_SIZE);
+		writel(SPARE_CP_BASE + PP_DESC_BASE, sp + 0x00);
+		writel(PP_NUM, sp + 0x04);
+		writel(SPARE_CP_BASE + PP_DATA_BASE, sp + 0x08);
+		writel(0, sp + 0x0c);			/* fore_ptr, CP's */
+		writel(0, sp + 0x10);			/* rear_ptr, ours */
+	}
 	wmb();
 	dev_info(cp->dev, "SBD: %zu links, desc end %u, buffers end %u\n",
 		 CP_NUM_LINKS, desc, buff);
@@ -618,6 +683,146 @@ static void cp_deliver(struct exynos_cp *cp, u8 *frm, unsigned int len)
 	wake_up_interruptible(&iod->wq);
 }
 
+/* one raw IP packet of PS channel ch, from the CP's memory */
+static void cp_ps_deliver(struct exynos_cp *cp, u8 ch, const void __iomem *src,
+			  unsigned int len)
+{
+	struct net_device *ndev = cp->ps_dev;
+	struct sk_buff *skb;
+	u8 v;
+
+	if (ch < PS_CH_FIRST || ch > PS_CH_LAST || !len || len > 2048) {
+		dev_err_ratelimited(cp->dev, "PS DL ch %u len %u dropped\n", ch, len);
+		return;
+	}
+	if (!cp->ps_ch_seen[ch - PS_CH_FIRST]) {
+		cp->ps_ch_seen[ch - PS_CH_FIRST] = true;
+		dev_info(cp->dev, "PS DL on ch %u\n", ch);
+	}
+	if (!ndev || !netif_running(ndev)) {
+		cp->rx_dropped++;
+		return;
+	}
+	skb = netdev_alloc_skb(ndev, len);
+	if (!skb) {
+		ndev->stats.rx_dropped++;
+		return;
+	}
+	memcpy_fromio(skb_put(skb, len), src, len);
+	v = skb->data[0] >> 4;
+	if (v != 4 && v != 6) {
+		ndev->stats.rx_errors++;
+		dev_kfree_skb_any(skb);
+		return;
+	}
+	skb->protocol = v == 6 ? htons(ETH_P_IPV6) : htons(ETH_P_IP);
+	skb_reset_mac_header(skb);
+	skb_reset_network_header(skb);
+	ndev->stats.rx_packets++;
+	ndev->stats.rx_bytes += len;
+	netif_rx(skb);
+}
+
+/* ring 8 DL: raw IP per slot, channel in size_v[23:16] */
+static void cp_rx_ps_ring(struct exynos_cp *cp, unsigned int id)
+{
+	struct cp_ring *rb = &cp->ring[id][DL];
+	void __iomem *ipc = cp_ipc(cp);
+	u16 rp = ring_get(cp, rb->rp), wp = ring_get(cp, rb->wp);
+	u32 sz, off;
+
+	if (rp >= rb->len || wp >= rb->len) {
+		dev_err_ratelimited(cp->dev, "ring %u DL dirty rp %u wp %u\n",
+				    id, rp, wp);
+		return;
+	}
+	while (rp != wp) {
+		rmb();
+		sz = readl(ipc + rb->size_v + rp * 4);
+		off = readl(ipc + rb->addr_v + rp * 4);
+		if ((sz & 0xffff) <= rb->size && off < 0x500000 - (sz & 0xffff))
+			cp_ps_deliver(cp, (sz >> 16) & 0xff, ipc + off, sz & 0xffff);
+		else
+			dev_err_ratelimited(cp->dev, "ring %u slot %u bad %#x @%#x\n",
+					    id, rp, sz, off);
+		mb();
+		rp = (rp + 1) % rb->len;
+		ring_set(cp, rb->rp, rp);
+	}
+}
+
+/* ring 9 DL: read the cells the CP filled (up to dl_wp), give each slot back (dl_rp) */
+static void cp_rx_zc_ring(struct exynos_cp *cp, unsigned int id)
+{
+	struct cp_ring *rb = &cp->ring[id][DL];
+	void __iomem *ipc = cp_ipc(cp);
+	void __iomem *zmb = (void __iomem __force *)cp->spare + ZMB_OFF;
+	u16 rd = rb->zc_rd, fill = ring_get(cp, rb->wp), fed;
+	u32 sz;
+
+	if (!cp->spare || fill >= rb->len || rd >= rb->len)
+		return;
+	while (rd != fill) {
+		rmb();
+		sz = readl(ipc + rb->size_v + rd * 4);
+		if ((sz & 0xffff) <= ZMB_CELL - ZMB_HEADROOM)
+			cp_ps_deliver(cp, (sz >> 16) & 0xff,
+				      zmb + rd * ZMB_CELL + ZMB_HEADROOM, sz & 0xffff);
+		else
+			dev_err_ratelimited(cp->dev, "ring %u zc slot %u bad %#x\n",
+					    id, rd, sz);
+		mb();
+		/* the slot after the last fed one gets its cell back */
+		fed = ring_get(cp, rb->rp);
+		if (fed < rb->len) {
+			writeq(ZMB_SHMEM_SIZE + fed * ZMB_CELL + ZMB_HEADROOM,
+			       ipc + rb->buff + fed * 8);
+			wmb();
+			ring_set(cp, rb->rp, (fed + 1) % rb->len);
+		}
+		rd = (rd + 1) % rb->len;
+	}
+	rb->zc_rd = rd;
+}
+
+/* pktproc: the CP advances fore_ptr, we read up to it and give back via rear_ptr */
+static void cp_rx_pktproc(struct exynos_cp *cp)
+{
+	void __iomem *sp = (void __iomem __force *)cp->spare;
+	u32 fore, rear, len, addr;
+	void __iomem *d;
+	u8 ch;
+
+	if (!sp)
+		return;
+	fore = readl(sp + 0x0c);
+	rear = readl(sp + 0x10);
+	if (fore >= PP_NUM || rear >= PP_NUM) {
+		dev_err_ratelimited(cp->dev, "pktproc dirty fore %u rear %u\n", fore, rear);
+		return;
+	}
+	while (rear != fore) {
+		rmb();
+		d = sp + PP_DESC_BASE + rear * PP_DESC_SIZE;
+		addr = readl(d);
+		len = readw(d + 16);
+		ch = readb(d + 18);
+		if (ch != 0xff) {
+			if (addr >= SPARE_CP_BASE + PP_DATA_BASE &&
+			    addr - SPARE_CP_BASE <= PP_DATA_END - len)
+				cp_ps_deliver(cp, ch, sp + (addr - SPARE_CP_BASE), len);
+			else
+				dev_err_ratelimited(cp->dev, "pktproc %u bad addr %#x len %u\n",
+						    rear, addr, len);
+		}
+		mb();
+		rear = (rear + 1) % PP_NUM;
+		writel(rear, sp + 0x10);
+		if (rear == fore)
+			fore = readl(sp + 0x0c) % PP_NUM;
+	}
+}
+
 /* sbd_pio_rx + check_more: one SIPC5 frame per slot, or one spread over several */
 static void cp_rx_ring(struct exynos_cp *cp, unsigned int id)
 {
@@ -685,9 +890,17 @@ static void cp_rx(struct exynos_cp *cp)
 
 	if (!READ_ONCE(cp->sbd_up))
 		return;
-	for (i = 0; i < CP_NUM_LINKS; i++)
-		if (!cp_links[i].zerocopy_dl)
+	cp_rx_pktproc(cp);
+	for (i = 0; i < CP_NUM_LINKS; i++) {
+		if (cp_links[i].zerocopy_dl)
+			cp_rx_zc_ring(cp, i);
+		else if (cp_links[i].ps)
+			cp_rx_ps_ring(cp, i);
+		else
 			cp_rx_ring(cp, i);
+	}
+	if (cp->ps_dev && netif_queue_stopped(cp->ps_dev))
+		netif_wake_queue(cp->ps_dev);
 }
 
 /* sbd_pio_tx */
@@ -732,6 +945,71 @@ static int cp_tx(struct exynos_cp *cp, struct cp_iod *iod,
 	mutex_unlock(&cp->tx_lock);
 	kfree(frm);
 	return ret;
+}
+
+/* rmnet0 */
+
+struct cp_ps_priv {
+	struct exynos_cp *cp;
+};
+
+static netdev_tx_t cp_ps_xmit(struct sk_buff *skb, struct net_device *ndev)
+{
+	struct exynos_cp *cp = ((struct cp_ps_priv *)netdev_priv(ndev))->cp;
+	struct cp_ring *rb = &cp->ring[PS_UL_LINK][UL];
+	void __iomem *ipc = cp_ipc(cp);
+	unsigned long flags;
+	u16 rp, wp;
+
+	if (!READ_ONCE(cp->ipc_up) || skb->len > rb->size || skb_linearize(skb)) {
+		ndev->stats.tx_dropped++;
+		dev_kfree_skb_any(skb);
+		return NETDEV_TX_OK;
+	}
+	spin_lock_irqsave(&cp->ps_tx_lock, flags);
+	rp = ring_get(cp, rb->rp);
+	wp = ring_get(cp, rb->wp);
+	if (rp >= rb->len || wp >= rb->len) {
+		spin_unlock_irqrestore(&cp->ps_tx_lock, flags);
+		ndev->stats.tx_errors++;
+		dev_kfree_skb_any(skb);
+		return NETDEV_TX_OK;
+	}
+	if ((wp + 1) % rb->len == rp) {
+		netif_stop_queue(ndev);
+		spin_unlock_irqrestore(&cp->ps_tx_lock, flags);
+		return NETDEV_TX_BUSY;
+	}
+	memcpy_toio(ipc + readl(ipc + rb->addr_v + wp * 4), skb->data, skb->len);
+	writel(skb->len | (READ_ONCE(ps_ul_ch) & 0xff) << 16, ipc + rb->size_v + wp * 4);
+	wmb();
+	ring_set(cp, rb->wp, (wp + 1) % rb->len);
+	wmb();
+	cp_send_msg(cp, MSG_INT_VALID | MSG_SEND_DATA);
+	spin_unlock_irqrestore(&cp->ps_tx_lock, flags);
+
+	ndev->stats.tx_packets++;
+	ndev->stats.tx_bytes += skb->len;
+	dev_consume_skb_any(skb);
+	return NETDEV_TX_OK;
+}
+
+static const struct net_device_ops cp_ps_ops = {
+	.ndo_start_xmit	= cp_ps_xmit,
+};
+
+static void cp_ps_setup(struct net_device *ndev)
+{
+	ndev->netdev_ops = &cp_ps_ops;
+	ndev->type = ARPHRD_RAWIP;
+	ndev->flags = IFF_POINTOPOINT | IFF_NOARP;
+	ndev->hard_header_len = 0;
+	ndev->addr_len = 0;
+	ndev->mtu = PS_MTU;
+	ndev->min_mtu = 68;
+	ndev->max_mtu = 2048;
+	ndev->tx_queue_len = 1000;
+	ndev->needs_free_netdev = true;
 }
 
 static void cp_handle_msg(struct exynos_cp *cp, u32 msg)
@@ -1432,6 +1710,17 @@ static int exynos_cp_probe(struct platform_device *pdev)
 	if (IS_ERR(cp->base))
 		return PTR_ERR(cp->base);
 
+	spin_lock_init(&cp->ps_tx_lock);
+	np = of_find_node_by_path("/reserved-memory/modem_spare@d0000000");
+	rmem = np ? of_reserved_mem_lookup(np) : NULL;
+	of_node_put(np);
+	if (rmem && rmem->base == SPARE_PHYS && rmem->size >= SPARE_SIZE)
+		cp->spare = devm_memremap(dev, SPARE_PHYS, SPARE_SIZE, MEMREMAP_WC);
+	if (IS_ERR_OR_NULL(cp->spare)) {
+		dev_warn(dev, "no modem_spare: no pktproc DL\n");
+		cp->spare = NULL;
+	}
+
 	/* all CP doorbells masked until someone listens */
 	writel(GENMASK(31, 16), cp->mbox + MBOX_INTMR0);
 	writel(GENMASK(31, 16), cp->mbox + MBOX_INTCR0);
@@ -1492,6 +1781,19 @@ static int exynos_cp_probe(struct platform_device *pdev)
 		}
 	}
 
+	cp->ps_dev = alloc_netdev(sizeof(struct cp_ps_priv), "rmnet%d",
+				  NET_NAME_ENUM, cp_ps_setup);
+	if (cp->ps_dev) {
+		((struct cp_ps_priv *)netdev_priv(cp->ps_dev))->cp = cp;
+		SET_NETDEV_DEV(cp->ps_dev, dev);
+		if (register_netdev(cp->ps_dev)) {
+			free_netdev(cp->ps_dev);
+			cp->ps_dev = NULL;
+		}
+	}
+	if (!cp->ps_dev)
+		dev_warn(dev, "no PS netdev\n");
+
 	dev_info(dev, "CP carve-out %pa + 0x%zx, PMU says %s\n", &cp->phys,
 		 cp->size, cp_powered(cp) ? "running" : "off");
 	return 0;
@@ -1502,6 +1804,8 @@ static void exynos_cp_remove(struct platform_device *pdev)
 	struct exynos_cp *cp = platform_get_drvdata(pdev);
 	unsigned int i, d;
 
+	if (cp->ps_dev)
+		unregister_netdev(cp->ps_dev);
 	for (i = 0; i < CP_NUM_IODS; i++) {
 		misc_deregister(&cp->iod[i].misc);
 		skb_queue_purge(&cp->iod[i].rxq);

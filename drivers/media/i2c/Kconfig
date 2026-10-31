@@ -781,6 +781,13 @@ config VIDEO_S5K3M5
 	  To compile this driver as a module, choose M here: the
 	  module will be called s5k3m5.
 
+config VIDEO_S5K3P9
+	tristate "Samsung S5K3P9 sensor support"
+	depends on I2C
+	help
+	  The 16 MP Samsung S5K3P9 camera sensor (rear ultrawide of the
+	  Galaxy S10e).
+
 config VIDEO_S5K5BAF
 	tristate "Samsung S5K5BAF sensor support"
 	help

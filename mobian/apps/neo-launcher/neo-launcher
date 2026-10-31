@@ -1,0 +1,6 @@
+#!/bin/sh
+# Neo Launcher for Phosh. gtk4-layer-shell has to be loaded before libwayland-client, so it is preloaded here.
+for LS in /usr/lib/*/libgtk4-layer-shell.so.0; do
+	[ -e "$LS" ] && export LD_PRELOAD="$LS${LD_PRELOAD:+:$LD_PRELOAD}" && break
+done
+exec gjs -m /usr/share/neo-launcher/main.js "$@"

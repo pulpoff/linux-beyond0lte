@@ -20,6 +20,9 @@
 #include <linux/dma-mapping.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
+#include <linux/irq.h>
+#include <linux/irqdomain.h>
+#include <linux/of_irq.h>
 #include <linux/iopoll.h>
 #include <linux/module.h>
 #include <linux/of.h>
@@ -29,6 +32,7 @@
 #include <drm/clients/drm_client_setup.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_bridge.h>
+#include <drm/drm_bridge_connector.h>
 #include <drm/drm_connector.h>
 #include <drm/drm_drv.h>
 #include <drm/drm_fb_dma_helper.h>
@@ -46,6 +50,8 @@
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_simple_kms_helper.h>
 #include <drm/drm_vblank.h>
+
+#include "exynos9820-dp.h"
 
 /* DECON0 */
 #define DECON_GLOBAL_CONTROL		0x0000
@@ -88,6 +94,19 @@
 struct decon_kms {
 	struct drm_device drm;
 	struct drm_simple_display_pipe pipe;
+
+	/* DECON2 + DPP VGRFS (DPUD0, our IOMMU domain) into the DP link */
+	struct drm_simple_display_pipe dp_pipe;
+	struct drm_bridge *dp_bridge;
+	void __iomem *decon2;
+	void __iomem *vgrfs_dma;
+	void __iomem *vgrfs_dpp;
+	int dp_irq;
+	bool dp_running;
+	/* flip done once DECON2 has latched the buffer (event_lock) */
+	struct drm_pending_vblank_event *dp_event;
+	u32 dp_saved_270;
+
 	void __iomem *decon;
 	void __iomem *idma;
 	void __iomem *dsim;
@@ -230,6 +249,454 @@ static const u32 decon_formats[] = {
 	DRM_FORMAT_XRGB8888,
 	DRM_FORMAT_ARGB8888,
 };
+
+/*
+ * DECON2 for DisplayPort, after dpu20/cal_9820 decon_reg_init()/start()/
+ * stop() for DECON_OUT_DP and dpp_reg_init()/configure_params(). DECON2 is
+ * cold (S-Boot never starts it) and takes window 4 on channel VGRFS: VGRFS
+ * sits behind SysMMU_DPUD0 like GF0, so our GEM buffers are already
+ * mapped for it. The DP controller generates the timing.
+ */
+#define DECON2_BASE			0x19050000
+#define VGRFS_DMA_BASE			0x19076000
+#define VGRFS_DPP_BASE			0x19026000
+#define DECON2_IRQ_FRAME_START		195	/* GIC SPI */
+
+#define DP_WIN				4
+#define DP_CH_VGRFS			1
+
+#define DECON_GC_TEN_BPC		BIT(20)
+#define DECON_GC_CMD_MODE		BIT(8)
+#define DECON_GC_RUN_STATUS		BIT(4)
+#define DECON_GC_EN			BIT(1)
+#define DECON_GC_EN_F			BIT(0)
+#define DECON_SRAM_SHARE_ENABLE		0x0030
+#define DECON_SRAM1_3_SHARE		(BIT(16) | BIT(20) | BIT(24))
+#define DECON_INTERRUPT_ENABLE		0x0040
+#define DECON_INT_EN			BIT(0)
+#define DECON_EXTRA_INT_PENDING		0x0050
+#define DECON_SCALED_SIZE_CONTROL_0	0x00a0
+#define DECON_CLOCK_CONTROL_0		0x00f0
+#define DECON_CC_CG_QACTIVE_MASK	(0x11111 | BIT(24) | BIT(28))
+#define DECON_OUTFIFO_SIZE_CONTROL_0	0x0120
+#define DECON_OUTFIFO_TH_CONTROL_0	0x012c
+#define DECON_OUTFIFO_DATA_ORDER	0x0130
+#define DECON_OUTFIFO_SWAP_MASK		GENMASK(6, 4)
+#define DECON_WIN_EN(w)			BIT(4 * (w))
+#define DECON_WIN_MAPCOLOR_EN(w)	BIT(4 * (w) + 1)
+#define DECON_WIN_CHMAP(w, ch)		(((ch) & 7) << (4 * (w)))
+#define DECON_WIN_CHMAP_MASK(w)		(7 << (4 * (w)))
+#define DECON_DATA_PATH_CONTROL_2	0x0230
+#define DECON2_NOCOMP_DPIF		0x008
+#define DECON_DP_CONNECTION_CONTROL	0x0270	/* DECON0 space */
+#define DECON_SEL_DP0_MASK		GENMASK(2, 0)
+#define DECON_WIN_CONTROL_0(w)		(0x1000 + (w) * 0x30)	/* DECON0 space */
+#define DECON_WIN_CONTROL_1(w)		(0x1004 + (w) * 0x30)
+#define DECON_WIN_START_POS(w)		(0x1008 + (w) * 0x30)
+#define DECON_WIN_END_POS(w)		(0x100c + (w) * 0x30)
+#define DECON_WIN_START_TIME(w)		(0x1018 + (w) * 0x30)
+
+#define IDMA_ENABLE			0x0000
+#define IDMA_CLOCK_GATE_EN		BIT(9)
+#define IDMA_IRQ			0x0004
+#define IDMA_ALL_IRQ_MASK		(0x3fb << 1)
+#define IDMA_IRQ_ENABLE			BIT(0)
+#define IDMA_OUT_CON			0x000c
+#define IDMA_OUT_FRAME_ALPHA		GENMASK(31, 24)
+#define IDMA_SRC_OFFSET			0x0014
+#define IDMA_DYNAMIC_GATING_EN		0x0058
+#define IDMA_IN_CON_DEFAULT		0x02000000	/* what S-Boot leaves in GF0 */
+
+#define DPP_ENABLE			0x0000
+#define DPP_CLOCK_GATE_EN		(7 << 8)
+#define DPP_IRQ				0x0004
+#define DPP_ALL_IRQ_MASK		(0x21 << 1)
+#define DPP_IRQ_ENABLE			BIT(0)
+#define DPP_IN_CON			0x0008
+#define DPP_IMG_SIZE			0x0018
+#define DPP_SCALED_IMG_SIZE		0x002c
+#define DPP_MAIN_H_RATIO		0x0044
+#define DPP_MAIN_V_RATIO		0x0048
+#define DPP_V_COEF(n, s, x)		(0x200 + (n) * 0x4 + (s) * 0x24 + (x) * 0x200)
+#define DPP_H_COEF(n, s, x)		(0x290 + (n) * 0x4 + (s) * 0x24 + (x) * 0x200)
+#define DPP_VGRF_HDR_CON		0x0600
+#define DPP_DYNAMIC_GATING_EN		0x0a54
+#define DPP_LINECNT_CON			0x0d00
+
+/* dpu20/dpp_coef.h, selection 0 (1:1): phases 0..8 */
+static const s16 vgrfs_h_coef[9][8] = {
+	{   0,   0,   0, 512,   0,   0,   0,   0 },
+	{  -2,   8, -25, 509,  30,  -9,   2,  -1 },
+	{  -4,  14, -46, 499,  64, -19,   5,  -1 },
+	{  -5,  20, -62, 482, 101, -30,   8,  -2 },
+	{  -6,  23, -73, 458, 142, -41,  12,  -3 },
+	{  -6,  25, -80, 429, 185, -53,  15,  -3 },
+	{  -6,  26, -83, 395, 228, -63,  19,  -4 },
+	{  -6,  25, -82, 357, 273, -71,  21,  -5 },
+	{  -5,  23, -78, 316, 316, -78,  23,  -5 },
+};
+
+static const s16 vgrfs_v_coef[9][4] = {
+	{   0, 512,   0,   0 },
+	{ -15, 508,  20,  -1 },
+	{ -25, 495,  45,  -3 },
+	{ -31, 473,  75,  -5 },
+	{ -33, 443, 110,  -8 },
+	{ -33, 408, 148, -11 },
+	{ -31, 367, 190, -14 },
+	{ -27, 324, 234, -19 },
+	{ -23, 279, 279, -23 },
+};
+
+static void rmw(void __iomem *base, u32 reg, u32 mask, u32 val)
+{
+	writel((readl(base + reg) & ~mask) | (val & mask), base + reg);
+}
+
+static inline struct decon_kms *dp_pipe_to_decon(struct drm_simple_display_pipe *pipe)
+{
+	return to_decon(pipe->crtc.dev);
+}
+
+/* dpp_reg_init() and the size-independent part of configure_params() */
+static void vgrfs_init(struct decon_kms *dk)
+{
+	int i, j, k;
+
+	rmw(dk->vgrfs_dma, IDMA_IRQ, IDMA_ALL_IRQ_MASK | IDMA_IRQ_ENABLE, IDMA_IRQ_ENABLE);
+	rmw(dk->vgrfs_dma, IDMA_ENABLE, IDMA_CLOCK_GATE_EN, 0);
+	writel(0, dk->vgrfs_dma + IDMA_DYNAMIC_GATING_EN);
+	rmw(dk->vgrfs_dma, IDMA_OUT_CON, IDMA_OUT_FRAME_ALPHA, IDMA_OUT_FRAME_ALPHA);
+	rmw(dk->vgrfs_dpp, DPP_IRQ, DPP_ALL_IRQ_MASK | DPP_IRQ_ENABLE, DPP_IRQ_ENABLE);
+	rmw(dk->vgrfs_dpp, DPP_ENABLE, DPP_CLOCK_GATE_EN, 0);
+	writel(0, dk->vgrfs_dpp + DPP_DYNAMIC_GATING_EN);
+	rmw(dk->vgrfs_dpp, DPP_LINECNT_CON, 0x3, 0x1);
+
+	writel(1 << 20, dk->vgrfs_dpp + DPP_MAIN_H_RATIO);
+	writel(1 << 20, dk->vgrfs_dpp + DPP_MAIN_V_RATIO);
+	for (i = 0; i < 9; i++)
+		for (j = 0; j < 8; j++)
+			for (k = 0; k < 2; k++)
+				writel((u32)(s32)vgrfs_h_coef[i][j], dk->vgrfs_dpp + DPP_H_COEF(i, j, k));
+	for (i = 0; i < 9; i++)
+		for (j = 0; j < 4; j++)
+			for (k = 0; k < 2; k++)
+				writel((u32)(s32)vgrfs_v_coef[i][j], dk->vgrfs_dpp + DPP_V_COEF(i, j, k));
+	writel(0, dk->vgrfs_dpp + DPP_VGRF_HDR_CON);
+	writel(0, dk->vgrfs_dpp + DPP_IN_CON);
+}
+
+/* the buffer; latched with DECON2's next shadow update */
+static void vgrfs_set_fb(struct decon_kms *dk, struct drm_plane_state *state)
+{
+	struct drm_framebuffer *fb = state->fb;
+	u32 w = drm_rect_width(&state->dst), h = drm_rect_height(&state->dst);
+	u32 x = state->src.x1 >> 16, y = state->src.y1 >> 16;
+	u32 fmt = fb->format->format == DRM_FORMAT_ARGB8888 ?
+		  IDMA_FMT_ARGB8888 : IDMA_FMT_XRGB8888;
+
+	writel((y << 16) | x, dk->vgrfs_dma + IDMA_SRC_OFFSET);
+	writel((fb->height << 16) | (fb->pitches[0] / 4), dk->vgrfs_dma + IDMA_SRC_SIZE);
+	writel((h << 16) | w, dk->vgrfs_dma + IDMA_IMG_SIZE);
+	writel((h << 16) | w, dk->vgrfs_dpp + DPP_IMG_SIZE);
+	writel((h << 16) | w, dk->vgrfs_dpp + DPP_SCALED_IMG_SIZE);
+	writel(lower_32_bits(drm_fb_dma_get_gem_addr(fb, state, 0)),
+	       dk->vgrfs_dma + IDMA_IN_BASE_ADDR_Y);
+	writel(IDMA_IN_CON_DEFAULT | FIELD_PREP(IDMA_IMG_FORMAT, fmt),
+	       dk->vgrfs_dma + IDMA_IN_CON);
+}
+
+static int decon2_start(struct decon_kms *dk, const struct drm_display_mode *mode,
+			struct drm_plane_state *state)
+{
+	void __iomem *d2 = dk->decon2, *d0 = dk->decon;
+	u32 size = (mode->vdisplay << 16) | mode->hdisplay, v;
+	int ret;
+
+	vgrfs_init(dk);
+	vgrfs_set_fb(dk, state);
+
+	/* decon_reg_init(2); DECON0's CLOCK_CONTROL_0 bit 28 is already set */
+	rmw(d2, DECON_CLOCK_CONTROL_0, DECON_CC_CG_QACTIVE_MASK, 0);
+	writel(DECON_SRAM1_3_SHARE, d2 + DECON_SRAM_SHARE_ENABLE);
+	rmw(d2, DECON_GLOBAL_CONTROL, DECON_GC_CMD_MODE, 0);
+	writel(size, d2 + DECON_BLENDER_BG_IMAGE_SIZE_0);
+	writel(size, d2 + DECON_SCALED_SIZE_CONTROL_0);
+	rmw(d2, DECON_HW_SW_TRIG_CONTROL, DECON_HW_TRIG_EN, DECON_HW_TRIG_EN);
+	rmw(d2, DECON_OUTFIFO_DATA_ORDER, DECON_OUTFIFO_SWAP_MASK, 0);	/* RGB for DP */
+	rmw(d2, DECON_DATA_PATH_CONTROL_2, GENMASK(25, 24) | GENMASK(7, 0), DECON2_NOCOMP_DPIF);
+	writel(size, d2 + DECON_OUTFIFO_SIZE_CONTROL_0);
+	rmw(d2, DECON_OUTFIFO_TH_CONTROL_0, 0x7, 0x5);
+	rmw(d2, DECON_GLOBAL_CONTROL, DECON_GC_TEN_BPC | DECON_GC_EN_F, 0);
+	writel(DECON_INT_FRAME_DONE | DECON_INT_FRAME_START, d2 + DECON_INTERRUPT_PENDING);
+	writel(BIT(8) | BIT(4), d2 + DECON_EXTRA_INT_PENDING);
+	writel(DECON_INT_FRAME_START | DECON_INT_EN, d2 + DECON_INTERRUPT_ENABLE);
+	dk->dp_saved_270 = readl(d0 + DECON_DP_CONNECTION_CONTROL);
+	rmw(d0, DECON_DP_CONNECTION_CONTROL, DECON_SEL_DP0_MASK, 2);
+
+	/* window 4 on VGRFS, full screen, blend "copy" like DECON0's window 5 */
+	writel(0x102, d0 + DECON_WIN_CONTROL_0(DP_WIN));
+	writel(0, d0 + DECON_WIN_CONTROL_1(DP_WIN));
+	writel(0, d0 + DECON_WIN_START_POS(DP_WIN));
+	writel(((mode->vdisplay - 1) << 16) | (mode->hdisplay - 1),
+	       d0 + DECON_WIN_END_POS(DP_WIN));
+	writel(0, d0 + DECON_WIN_START_TIME(DP_WIN));
+	rmw(d2, DECON_DATA_PATH_CONTROL_1, DECON_WIN_CHMAP_MASK(DP_WIN),
+	    DECON_WIN_CHMAP(DP_WIN, DP_CH_VGRFS));
+	rmw(d2, DECON_DATA_PATH_CONTROL_0, DECON_WIN_EN(DP_WIN) | DECON_WIN_MAPCOLOR_EN(DP_WIN),
+	    DECON_WIN_EN(DP_WIN));
+
+	/* decon_reg_start(): the DP side already powered the LH channel */
+	rmw(d2, DECON_GLOBAL_CONTROL, DECON_GC_EN | DECON_GC_EN_F, DECON_GC_EN | DECON_GC_EN_F);
+	writel(DECON_SHADOW_GLOBAL | BIT(DP_WIN), d2 + DECON_SHADOW_REG_UPDATE_REQ);
+	ret = readl_poll_timeout(d2 + DECON_GLOBAL_CONTROL, v, v & DECON_GC_RUN_STATUS, 10, 20000);
+	if (ret)
+		drm_err(&dk->drm, "DECON2 did not start (%08x)\n", v);
+	return ret;
+}
+
+/* decon_reg_stop(): window off, per-frame off, wait for idle */
+static void decon2_stop(struct decon_kms *dk)
+{
+	void __iomem *d2 = dk->decon2;
+	u32 v;
+
+	writel(0, d2 + DECON_INTERRUPT_ENABLE);
+	rmw(d2, DECON_DATA_PATH_CONTROL_0, DECON_WIN_EN(DP_WIN), 0);
+	writel(DECON_SHADOW_GLOBAL | BIT(DP_WIN), d2 + DECON_SHADOW_REG_UPDATE_REQ);
+	rmw(d2, DECON_GLOBAL_CONTROL, DECON_GC_EN_F, 0);
+	if (readl_poll_timeout(d2 + DECON_GLOBAL_CONTROL, v, !(v & DECON_GC_RUN_STATUS),
+			       100, 100000))
+		drm_err(&dk->drm, "DECON2 did not stop (%08x)\n", v);
+	rmw(dk->decon, DECON_DP_CONNECTION_CONTROL, DECON_SEL_DP0_MASK, dk->dp_saved_270);
+}
+
+static int decon_dp_check(struct drm_simple_display_pipe *pipe,
+			  struct drm_plane_state *plane_state,
+			  struct drm_crtc_state *crtc_state)
+{
+	struct drm_framebuffer *fb = plane_state->fb;
+	int ret;
+
+	ret = drm_atomic_helper_check_plane_state(plane_state, crtc_state,
+						  DRM_PLANE_NO_SCALING,
+						  DRM_PLANE_NO_SCALING,
+						  false, false);
+	if (ret || !fb || !plane_state->visible)
+		return ret;
+
+	/* full-screen window, stride a whole number of pixels */
+	if (drm_rect_width(&plane_state->dst) != crtc_state->mode.hdisplay ||
+	    drm_rect_height(&plane_state->dst) != crtc_state->mode.vdisplay ||
+	    fb->pitches[0] % 4 || fb->pitches[0] / 4 > 0xffff)
+		return -EINVAL;
+	return 0;
+}
+
+/*
+ * The flip is done when DECON2 has taken the shadow registers, not at the
+ * next FRAME_START: an update written just after a latch sees that frame's
+ * FRAME_START first, and a client told then would draw into the buffer that
+ * is still being scanned out (flicker in fullscreen games).
+ */
+static void decon_dp_send_event(struct decon_kms *dk, struct drm_crtc *crtc, bool armed)
+{
+	struct drm_pending_vblank_event *event = crtc->state->event;
+	unsigned long flags;
+
+	if (!event)
+		return;
+	crtc->state->event = NULL;
+	spin_lock_irqsave(&crtc->dev->event_lock, flags);
+	if (armed && !dk->dp_event && drm_crtc_vblank_get(crtc) == 0)
+		dk->dp_event = event;
+	else
+		drm_crtc_send_vblank_event(crtc, event);
+	spin_unlock_irqrestore(&crtc->dev->event_lock, flags);
+}
+
+/* under event_lock: hand back the held flip event */
+static void decon_dp_complete_event(struct decon_kms *dk)
+{
+	struct drm_crtc *crtc = &dk->dp_pipe.crtc;
+
+	drm_crtc_send_vblank_event(crtc, dk->dp_event);
+	drm_crtc_vblank_put(crtc);
+	dk->dp_event = NULL;
+}
+
+static void decon_dp_enable(struct drm_simple_display_pipe *pipe,
+			    struct drm_crtc_state *crtc_state,
+			    struct drm_plane_state *plane_state)
+{
+	struct decon_kms *dk = dp_pipe_to_decon(pipe);
+	const struct drm_display_mode *mode = &crtc_state->adjusted_mode;
+
+	/* downstream order: the DP stream and its LH channel first, then DECON2 */
+	if (exynos9820_dp_stream_on(dk->dp_bridge, mode))
+		return;
+	if (decon2_start(dk, mode, plane_state)) {
+		decon2_stop(dk);
+		exynos9820_dp_stream_off(dk->dp_bridge);
+		return;
+	}
+	dk->dp_running = true;
+	drm_info(&dk->drm, "DisplayPort: %s@%d\n", mode->name, drm_mode_vrefresh(mode));
+	drm_crtc_vblank_on(&pipe->crtc);
+}
+
+static void decon_dp_disable(struct drm_simple_display_pipe *pipe)
+{
+	struct decon_kms *dk = dp_pipe_to_decon(pipe);
+
+	unsigned long flags;
+
+	drm_crtc_vblank_off(&pipe->crtc);
+	spin_lock_irqsave(&dk->drm.event_lock, flags);
+	if (dk->dp_event)
+		decon_dp_complete_event(dk);
+	spin_unlock_irqrestore(&dk->drm.event_lock, flags);
+	if (!dk->dp_running)
+		return;
+	decon2_stop(dk);
+	exynos9820_dp_stream_off(dk->dp_bridge);
+	dk->dp_running = false;
+}
+
+static void decon_dp_update(struct drm_simple_display_pipe *pipe,
+			    struct drm_plane_state *old_state)
+{
+	struct decon_kms *dk = dp_pipe_to_decon(pipe);
+	struct drm_plane_state *state = pipe->plane.state;
+	u32 val;
+
+	if (dk->dp_running && state->fb && state->visible) {
+		if (readl_poll_timeout(dk->decon2 + DECON_SHADOW_REG_UPDATE_REQ, val,
+				       !val, 100, 50000))
+			drm_warn_once(&dk->drm, "DECON2 shadow update stuck: 0x%08x\n", val);
+		vgrfs_set_fb(dk, state);
+		writel(DECON_SHADOW_GLOBAL | BIT(DP_WIN),
+		       dk->decon2 + DECON_SHADOW_REG_UPDATE_REQ);
+	}
+	decon_dp_send_event(dk, &pipe->crtc, dk->dp_running);
+}
+
+static int decon_dp_enable_vblank(struct drm_simple_display_pipe *pipe)
+{
+	return 0;	/* FRAME_START is on whenever DECON2 runs */
+}
+
+static void decon_dp_disable_vblank(struct drm_simple_display_pipe *pipe)
+{
+}
+
+static const struct drm_simple_display_pipe_funcs decon_dp_pipe_funcs = {
+	.check = decon_dp_check,
+	.update = decon_dp_update,
+	.enable = decon_dp_enable,
+	.disable = decon_dp_disable,
+	.enable_vblank = decon_dp_enable_vblank,
+	.disable_vblank = decon_dp_disable_vblank,
+};
+
+static irqreturn_t decon2_irq(int irq, void *data)
+{
+	struct decon_kms *dk = data;
+	u32 pend = readl(dk->decon2 + DECON_INTERRUPT_PENDING) &
+		   (DECON_INT_FRAME_START | DECON_INT_FRAME_DONE | DECON_INT_EXTRA);
+
+	if (!pend)
+		return IRQ_NONE;
+	writel(pend, dk->decon2 + DECON_INTERRUPT_PENDING);
+	if (pend & DECON_INT_FRAME_START) {
+		drm_crtc_handle_vblank(&dk->dp_pipe.crtc);
+		spin_lock(&dk->drm.event_lock);
+		if (dk->dp_event && !(readl(dk->decon2 + DECON_SHADOW_REG_UPDATE_REQ) &
+				      (DECON_SHADOW_GLOBAL | BIT(DP_WIN))))
+			decon_dp_complete_event(dk);
+		spin_unlock(&dk->drm.event_lock);
+	}
+	return IRQ_HANDLED;
+}
+
+/* DECON2's FRAME_START has no node in our DT yet: map the GIC SPI here */
+static int decon2_map_irq(struct decon_kms *dk)
+{
+	struct device_node *gic = of_irq_find_parent(dk->drm.dev->of_node);
+	struct irq_fwspec spec = {
+		.param_count = 3,
+		.param = { 0 /* GIC_SPI */, DECON2_IRQ_FRAME_START, IRQ_TYPE_LEVEL_HIGH },
+	};
+	int irq;
+
+	if (!gic)
+		return -ENODEV;
+	spec.fwnode = of_fwnode_handle(gic);
+	irq = irq_create_fwspec_mapping(&spec);
+	of_node_put(gic);
+	return irq ?: -EINVAL;
+}
+
+static void decon_put_bridge(void *bridge)
+{
+	drm_bridge_put(bridge);
+}
+
+/* the DP output, if the DP controller is there; the panel works without it */
+static int decon_dp_init(struct decon_kms *dk)
+{
+	struct drm_device *drm = &dk->drm;
+	struct device *dev = drm->dev;
+	struct drm_connector *connector;
+	struct device_node *np;
+	int ret;
+
+	np = of_find_compatible_node(NULL, NULL, "samsung,exynos9820-dp");
+	if (!np || !of_device_is_available(np)) {
+		of_node_put(np);
+		return 0;
+	}
+	dk->dp_bridge = of_drm_find_and_get_bridge(np);
+	of_node_put(np);
+	if (!dk->dp_bridge) {
+		drm_warn(drm, "DisplayPort controller not bound, no external output\n");
+		return 0;
+	}
+	ret = devm_add_action_or_reset(dev, decon_put_bridge, dk->dp_bridge);
+	if (ret)
+		return ret;
+
+	dk->decon2 = devm_ioremap(dev, DECON2_BASE, 0x1000);
+	dk->vgrfs_dma = devm_ioremap(dev, VGRFS_DMA_BASE, 0x1000);
+	dk->vgrfs_dpp = devm_ioremap(dev, VGRFS_DPP_BASE, 0x1000);
+	if (!dk->decon2 || !dk->vgrfs_dma || !dk->vgrfs_dpp)
+		return -ENOMEM;
+	if (readl(dk->decon2 + DECON_GLOBAL_CONTROL) & DECON_GC_RUN_STATUS) {
+		drm_warn(drm, "DECON2 already running, no external output\n");
+		return 0;
+	}
+
+	ret = drm_simple_display_pipe_init(drm, &dk->dp_pipe, &decon_dp_pipe_funcs,
+					   decon_formats, ARRAY_SIZE(decon_formats),
+					   NULL, NULL);
+	if (ret)
+		return ret;
+	ret = drm_bridge_attach(&dk->dp_pipe.encoder, dk->dp_bridge, NULL,
+				DRM_BRIDGE_ATTACH_NO_CONNECTOR);
+	if (ret)
+		return ret;
+	connector = drm_bridge_connector_init(drm, &dk->dp_pipe.encoder);
+	if (IS_ERR(connector))
+		return PTR_ERR(connector);
+	ret = drm_connector_attach_encoder(connector, &dk->dp_pipe.encoder);
+	if (ret)
+		return ret;
+
+	dk->dp_irq = decon2_map_irq(dk);
+	if (dk->dp_irq < 0)
+		return dk->dp_irq;
+	return devm_request_irq(dev, dk->dp_irq, decon2_irq, 0, "decon2", dk);
+}
 
 static irqreturn_t decon_irq(int irq, void *data)
 {
@@ -377,10 +844,11 @@ static int decon_drm_init(struct decon_kms *dk, struct drm_bridge *bridge)
 	ret = drmm_mode_config_init(drm);
 	if (ret)
 		return ret;
-	drm->mode_config.min_width = S10E_WIDTH;
-	drm->mode_config.max_width = S10E_WIDTH;
-	drm->mode_config.min_height = S10E_HEIGHT;
-	drm->mode_config.max_height = S10E_HEIGHT;
+	/* the panel's pipe checks its own size; the DP output goes to 4096x2160 */
+	drm->mode_config.min_width = 640;
+	drm->mode_config.max_width = 4096;
+	drm->mode_config.min_height = 480;
+	drm->mode_config.max_height = 4096;
 	drm->mode_config.preferred_depth = 24;
 	drm->mode_config.funcs = &decon_mode_config_funcs;
 
@@ -397,7 +865,11 @@ static int decon_drm_init(struct decon_kms *dk, struct drm_bridge *bridge)
 	if (ret)
 		return ret;
 
-	ret = drm_vblank_init(drm, 1);
+	ret = decon_dp_init(dk);
+	if (ret)
+		drm_warn(drm, "no DisplayPort output: %d\n", ret);
+
+	ret = drm_vblank_init(drm, drm->mode_config.num_crtc);
 	if (ret)
 		return ret;
 
@@ -406,6 +878,9 @@ static int decon_drm_init(struct decon_kms *dk, struct drm_bridge *bridge)
 		return ret;
 
 	drm_mode_config_reset(drm);
+
+	/* enables the DP bridge's HPD, so plugging in a monitor sends a uevent */
+	drmm_kms_helper_poll_init(drm);
 
 	/* evict simpledrm from S-Boot's framebuffer */
 	ret = aperture_remove_conflicting_devices(dk->boot_base,
@@ -565,5 +1040,6 @@ static struct platform_driver decon_platform_driver = {
 };
 module_platform_driver(decon_platform_driver);
 
+MODULE_SOFTDEP("pre: exynos9820-dp");
 MODULE_DESCRIPTION("Exynos 9820 DECON0 handover KMS and DSI command host");
 MODULE_LICENSE("GPL");

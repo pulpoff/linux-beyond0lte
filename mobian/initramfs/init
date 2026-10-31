@@ -86,15 +86,6 @@ EOC
 touch /tmp/udhcpd.leases
 udhcpd /tmp/udhcpd.conf
 
-telnetd -l /bin/sh -b $IP
-mkdir -p /etc/dropbear
-dropbear -R -B -p $IP:22 && log "ssh root@$IP"
-
-( while true; do
-	[ -c /dev/ttyGS0 ] && setsid sh -c 'exec sh </dev/ttyGS0 >/dev/ttyGS0 2>&1'
-	sleep 1
-done ) &
-CONSOLE_LOOP=$!
 log "ready"
 
 part() {
@@ -125,8 +116,7 @@ mobian() {
 	# keeps the trail if the switch dies.
 	exec 9>/dev/kmsg
 	k() { echo "s10e-init: switch: $*" >&9; }
-	kill $CONSOLE_LOOP 2>/dev/null; k "console loop stopped"
-	killall dropbear telnetd udhcpd 2>/dev/null; k "daemons stopped"
+	killall udhcpd 2>/dev/null; k "udhcpd stopped"
 	# The gadget stays up into Mobian: unbinding the UDC hangs here, and then
 	# mobile-usb-gadget cannot have the controller either (masked on the S10e;
 	# s10e-usb-net.service puts 172.16.42.1 on usb0 again). Only the shell on
@@ -153,5 +143,15 @@ mobian() {
 }
 mobian
 
+# The root shells (telnet, SSH with an empty password, the ACM console) only
+# for a boot that stays here: the rescue menu entry, or Mobian failing. A
+# normal boot never opens them, not even for the seconds before the switch.
+telnetd -l /bin/sh -b $IP
+mkdir -p /etc/dropbear
+dropbear -R -B -p $IP:22
+( while true; do
+	[ -c /dev/ttyGS0 ] && setsid sh -c 'exec sh </dev/ttyGS0 >/dev/ttyGS0 2>&1'
+	sleep 1
+done ) &
 log "staying in the initramfs: ssh root@$IP"
 while true; do sleep 3600; done

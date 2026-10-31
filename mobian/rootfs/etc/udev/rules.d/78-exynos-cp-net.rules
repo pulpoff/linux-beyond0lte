@@ -1,0 +1,3 @@
+# rmnet0 of the Exynos 9820 CP: ModemManager connects it with +CGACT and takes the IP settings
+# from +CGCONTRDP (modemmanager +surya2, 0002-generic-net-port-cgact.patch)
+ACTION=="add|change", SUBSYSTEM=="net", KERNEL=="rmnet0", DRIVERS=="exynos9820-cp", ENV{ID_MM_NET_CGACT}="1"

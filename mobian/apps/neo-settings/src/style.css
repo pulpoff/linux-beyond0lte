@@ -1,0 +1,65 @@
+/* Neo Settings, One UI style: black behind rounded cards in the dark, light grey behind white ones in the light */
+.ns-root, .ns-window { background-color: #f2f2f4; }
+.ns-card { background-color: #ffffff; border-radius: 26px; margin: 0 14px 18px 14px; }
+.ns-root headerbar { background: transparent; box-shadow: none; }
+/* dark: a class main.c keeps in step with libadwaita's dark flag (the CSS media query does not follow it here) */
+window.ns-dark, window.ns-dark .ns-root { background-color: #000000; }
+window.ns-dark .ns-card { background-color: #1a1a1c; }
+.ns-card > row { background: transparent; }
+/* no :hover: on a touch screen it stays on the row a swipe started on; pressed only */
+.ns-card > row:active { background-color: alpha(currentColor, 0.10); }
+row.ns-row { padding: 16px 20px; }
+.ns-column { padding: 6px 0 24px 0; }
+.ns-main-head { padding: 2px 20px 10px 26px; }
+.ns-big { font-size: 30px; font-weight: 800; }
+.ns-huge { font-size: 48px; font-weight: 800; }
+.ns-head { font-size: 20px; font-weight: 700; margin-left: 4px; }
+.ns-title { font-size: 18px; font-weight: 600; }
+.ns-sub { font-size: 14px; font-weight: 500; color: alpha(currentColor, 0.55); }
+.ns-group-title { font-size: 14px; font-weight: 600; color: alpha(currentColor, 0.6); margin: 4px 30px 8px 30px; }
+.ns-about-head { padding: 18px 0 26px 0; }
+.ns-card separator { background-color: alpha(currentColor, 0.10); min-height: 1px; margin-right: 22px; }
+separator.ns-inset { margin-left: 20px; }
+separator.ns-inset-icon { margin-left: 78px; }
+.ns-icon { min-width: 40px; min-height: 40px; border-radius: 999px; color: white; }
+.ns-blue { background-color: #3e7bf0; }
+.ns-violet { background-color: #6f63d8; }
+.ns-purple { background-color: #7a5af0; }
+.ns-green { background-color: #42b05a; }
+.ns-lime { background-color: #8cc63f; }
+.ns-orange { background-color: #ef7d2c; }
+.ns-red { background-color: #e5484d; }
+.ns-pink { background-color: #e35a7a; }
+.ns-yellow { background-color: #e8a838; }
+.ns-grey { background-color: #6c6c80; }
+.ns-accent { color: #3e7bf0; }
+/* the parallax picker */
+.ns-parallax-thumb { border-radius: 16px; background-color: alpha(currentColor, 0.08); border: 3px solid transparent; }
+.ns-parallax-card.ns-picked .ns-parallax-thumb { border-color: #3e7bf0; }
+flowboxchild { padding: 0; }
+/* accent dots */
+button.ns-accent-dot { min-width: 34px; min-height: 34px; padding: 0; border-radius: 999px; border: 3px solid transparent; }
+button.ns-accent-dot:checked { border-color: alpha(currentColor, 0.8); }
+.ns-accent-blue { background: #3584e4; } .ns-accent-teal { background: #2190a4; } .ns-accent-green { background: #3a944a; }
+.ns-accent-yellow { background: #c88800; } .ns-accent-orange { background: #ed5b00; } .ns-accent-red { background: #e62d42; }
+.ns-accent-pink { background: #d56199; } .ns-accent-purple { background: #9141ac; } .ns-accent-slate { background: #6f8396; }
+.ns-danger { color: #e5484d; }
+/* a line of text under a card */
+.ns-note { font-size: 14px; color: alpha(currentColor, 0.6); margin: -8px 30px 18px 30px; }
+/* the wallpaper picker */
+.ns-wall-thumb { border-radius: 16px; }
+/* a big head on a page: an app's icon and name, a device */
+.ns-page-head { padding: 10px 0 22px 0; }
+/* a long list (GtkListView) drawn as cards: each item a slice of one */
+listview.ns-list { background: transparent; padding: 6px 0 24px 0; }
+listview.ns-list > row { padding: 0; background: transparent; }
+.ns-li { background-color: #ffffff; margin: 0 14px; }
+window.ns-dark .ns-li { background-color: #1a1a1c; }
+.ns-li-first { border-top-left-radius: 26px; border-top-right-radius: 26px; }
+.ns-li-last { border-bottom-left-radius: 26px; border-bottom-right-radius: 26px; margin-bottom: 18px; }
+listview.ns-list > row:active .ns-li { background-image: linear-gradient(alpha(currentColor, 0.10), alpha(currentColor, 0.10)); }
+.ns-li > separator { background-color: alpha(currentColor, 0.10); min-height: 1px; margin: 0 22px 0 78px; }
+.ns-li-row { padding: 16px 20px; }
+
+/* an app's page: Uninstall, full width under the last card */
+button.ns-uninstall { margin: 8px 16px 24px; min-height: 48px; border-radius: 14px; font-weight: 600; }

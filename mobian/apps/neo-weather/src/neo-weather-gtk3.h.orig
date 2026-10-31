@@ -1,0 +1,9 @@
+/* The weather page (a tap on the home's weather widget), laid out like One UI's Weather: the place and the
+ * temperature over the sky, the next 24 hours as a curve, today against yesterday, the week, and the details. */
+#pragma once
+
+#include <gtk/gtk.h>
+
+typedef struct _NeoHome NeoHome;
+
+void neo_weather_show (GtkApplication *app, NeoHome *home, double lat, double lon, const char *place);

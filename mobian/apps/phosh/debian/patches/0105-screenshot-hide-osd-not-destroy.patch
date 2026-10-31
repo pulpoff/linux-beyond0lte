@@ -1,0 +1,32 @@
+From: pulpoff <pashkovsky@gmail.com>
+Subject: Screenshot combo: hide the volume popup instead of destroying it
+
+Destroying the popup's window right after the volume key had brought it up
+made phoc drop Phosh's connection ("Error 22 (Invalid argument) dispatching
+to Wayland display") and Phosh exited on every power + volume down. The popup
+is made fully transparent instead and closes on its own timeout.
+---
+--- a/src/shell.c	2026-10-10 01:06:18.947294359 +0200
++++ b/src/shell.c	2026-10-10 01:06:18.975098667 +0200
+@@ -2825,6 +2825,8 @@
+   /* a screenshot is being taken (power + volume down): no volume popup in it */
+   if (g_get_monotonic_time () < priv->osd_suppress_until)
+     return;
++  if (priv->osd)
++    gtk_widget_set_opacity (GTK_WIDGET (priv->osd), 1.0);
+ 
+   if (priv->osd) {
+     priv->osd_continue = TRUE;
+@@ -2938,6 +2940,11 @@
+   priv = phosh_shell_get_instance_private (self);
+ 
+   priv->osd_suppress_until = g_get_monotonic_time () + msec * G_TIME_SPAN_MILLISECOND;
++  /*
++   * Made invisible, not destroyed: the popup the same key press brought up
++   * may not be configured yet, and destroying its layer surface then made
++   * phoc drop Phosh's connection (EINVAL); its own timeout closes it.
++   */
+   if (priv->osd)
+-    gtk_widget_destroy (GTK_WIDGET (priv->osd));
++    gtk_widget_set_opacity (GTK_WIDGET (priv->osd), 0.0);
+ }

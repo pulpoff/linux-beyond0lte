@@ -1,0 +1,16 @@
+[Unit]
+Description=Neo Launcher, the home screen for Phosh
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=dbus
+BusName=de.yesman.NeoLauncher
+ExecStart=/usr/bin/neo-launcher
+Restart=on-failure
+RestartSec=2
+# apps opened before they got scopes of their own still live in this cgroup: stopping Neo must not kill them
+KillMode=process
+
+[Install]
+WantedBy=graphical-session.target

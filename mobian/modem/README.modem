@@ -1,11 +1,22 @@
 Exynos 9820 (S10e) modem on Mobian
 ==================================
 exynos9820-cp.ko   kernel driver: CP power/boot, mailbox, shared-memory link;
-                   /dev/umts_boot0, umts_ipc0, umts_ipc1, umts_rfs0
+                   /dev/umts_boot0, umts_ipc0, umts_ipc1, umts_rfs0, the WWAN AT port
+                   wwan0at0 and rmnet0 (raw-IP mobile data, PS-DATA-SPEC.md)
 exynos-cpboot      boots the CP from the radio partition + /var/lib/exynos-cp/nv_data.bin
 exynos-cpd         serves the CP's file requests (only /var/lib/exynos-cp), talks IPC,
                    logs to the journal; commands: echo "02 04 01" > /var/lib/exynos-cp/cmd
-exynos-modem.service  runs both, restarts (and re-boots the CP) on failure
+exynos-modem.service  runs both, restarts (and re-boots the CP) on failure, and after
+                   a SIM swap (a running CP never reads a new card)
+
+Mobile data
+  ModemManager 1.24.2-2+surya3 (mm/debs, held; mm/series = the Debian patches) drives
+  rmnet0 through cpd's AT commands: +CGACT=1,1 brings PDP context 1 up, +CGCONTRDP=1
+  gives the static IPv4 settings, NetworkManager configures rmnet0. udev/78-exynos-cp-net.rules
+  tags rmnet0 (ID_MM_NET_CGACT=1) so the generic plugin takes it as the data port.
+  Only context 1 exists (rmnet0 = SIPC channel 10). The initial-attach APN is chosen by cpd
+  (/var/lib/exynos-cp/apn overrides it); the data APN is the NetworkManager profile's.
+  An ATD*99 data dial is answered NO CARRIER: it must never become a voice call.
 
 Disable: touch /etc/exynos-cp/disable, or boot with s10e.nomodem.
 The EFS partitions are never written; NV changes land in /var/lib/exynos-cp/nv_data.bin

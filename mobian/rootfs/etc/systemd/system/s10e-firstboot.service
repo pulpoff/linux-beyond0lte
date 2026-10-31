@@ -1,0 +1,14 @@
+[Unit]
+Description=S10e: firmware from the vendor partition, modem NV data from efs
+DefaultDependencies=no
+After=local-fs.target
+Before=exynos-modem.service s10e-bt-addr.service bluetooth.service NetworkManager.service display-manager.service gdm.service sysinit.target
+ConditionPathExists=!/etc/s10e/no-firstboot
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/s10e-firstboot
+RemainAfterExit=yes
+
+[Install]
+WantedBy=sysinit.target

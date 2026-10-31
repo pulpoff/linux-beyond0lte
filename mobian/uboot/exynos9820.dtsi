@@ -991,6 +991,198 @@
 			};
 		};
 
+		usi_i2c_cam1: usi@108700c0 {
+			compatible = "samsung,exynos850-usi";
+			reg = <0x108700c0 0x20>;
+			ranges;
+
+			clock-names = "pclk",
+				      "ipclk";
+			clocks = <&cmu_peric1 CLK_GOUT_PERIC1_I2C_CAM1_PCLK>,
+				 <&cmu_peric1 CLK_GOUT_PERIC1_I2C_CAM1_IPCLK>;
+
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			samsung,sysreg = <&sysreg_peric1 0x100c>;
+			status = "disabled";
+
+			hsi2c_1: i2c@10870000 {
+				compatible = "samsung,exynosautov9-hsi2c";
+				reg = <0x10870000 0xc0>;
+				interrupts = <GIC_SPI 411 IRQ_TYPE_LEVEL_HIGH>;
+
+				clock-names = "hsi2c",
+					      "hsi2c_pclk";
+				clocks = <&cmu_peric1 CLK_GOUT_PERIC1_I2C_CAM1_IPCLK>,
+					 <&cmu_peric1 CLK_GOUT_PERIC1_I2C_CAM1_PCLK>;
+
+				#address-cells = <1>;
+				#size-cells = <0>;
+				status = "disabled";
+			};
+		};
+
+		usi_i2c_cam2: usi@108800c0 {
+			compatible = "samsung,exynos850-usi";
+			reg = <0x108800c0 0x20>;
+			ranges;
+
+			clock-names = "pclk",
+				      "ipclk";
+			clocks = <&cmu_peric1 CLK_GOUT_PERIC1_I2C_CAM2_PCLK>,
+				 <&cmu_peric1 CLK_GOUT_PERIC1_I2C_CAM2_IPCLK>;
+
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			samsung,sysreg = <&sysreg_peric1 0x1010>;
+			status = "disabled";
+
+			hsi2c_2: i2c@10880000 {
+				compatible = "samsung,exynosautov9-hsi2c";
+				reg = <0x10880000 0xc0>;
+				interrupts = <GIC_SPI 412 IRQ_TYPE_LEVEL_HIGH>;
+
+				clock-names = "hsi2c",
+					      "hsi2c_pclk";
+				clocks = <&cmu_peric1 CLK_GOUT_PERIC1_I2C_CAM2_IPCLK>,
+					 <&cmu_peric1 CLK_GOUT_PERIC1_I2C_CAM2_PCLK>;
+
+				#address-cells = <1>;
+				#size-cells = <0>;
+				status = "disabled";
+			};
+		};
+
+		usi_i2c_cam0: usi@108600c0 {
+			compatible = "samsung,exynos850-usi";
+			reg = <0x108600c0 0x20>;
+			ranges;
+
+			clock-names = "pclk",
+				      "ipclk";
+			clocks = <&cmu_peric1 CLK_GOUT_PERIC1_I2C_CAM0_PCLK>,
+				 <&cmu_peric1 CLK_GOUT_PERIC1_I2C_CAM0_IPCLK>;
+
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			samsung,sysreg = <&sysreg_peric1 0x1008>;
+			status = "disabled";
+
+			hsi2c_0: i2c@10860000 {
+				compatible = "samsung,exynosautov9-hsi2c";
+				reg = <0x10860000 0xc0>;
+				interrupts = <GIC_SPI 410 IRQ_TYPE_LEVEL_HIGH>;
+
+				clock-names = "hsi2c",
+					      "hsi2c_pclk";
+				clocks = <&cmu_peric1 CLK_GOUT_PERIC1_I2C_CAM0_IPCLK>,
+					 <&cmu_peric1 CLK_GOUT_PERIC1_I2C_CAM0_PCLK>;
+
+				#address-cells = <1>;
+				#size-cells = <0>;
+				status = "disabled";
+			};
+		};
+
+		usi_i2c_cam3: usi@108900c0 {
+			compatible = "samsung,exynos850-usi";
+			reg = <0x108900c0 0x20>;
+			ranges;
+
+			clock-names = "pclk",
+				      "ipclk";
+			clocks = <&cmu_peric1 CLK_GOUT_PERIC1_I2C_CAM3_PCLK>,
+				 <&cmu_peric1 CLK_GOUT_PERIC1_I2C_CAM3_IPCLK>;
+
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			samsung,sysreg = <&sysreg_peric1 0x1014>;
+			status = "disabled";
+
+			hsi2c_3: i2c@10890000 {
+				compatible = "samsung,exynosautov9-hsi2c";
+				reg = <0x10890000 0xc0>;
+				interrupts = <GIC_SPI 413 IRQ_TYPE_LEVEL_HIGH>;
+
+				clock-names = "hsi2c",
+					      "hsi2c_pclk";
+				clocks = <&cmu_peric1 CLK_GOUT_PERIC1_I2C_CAM3_IPCLK>,
+					 <&cmu_peric1 CLK_GOUT_PERIC1_I2C_CAM3_PCLK>;
+
+				#address-cells = <1>;
+				#size-cells = <0>;
+				status = "disabled";
+			};
+		};
+
+		usi08_i2c: usi@108f00c0 {
+			compatible = "samsung,exynos850-usi";
+			reg = <0x108f00c0 0x20>;
+			ranges;
+
+			clock-names = "pclk",
+				      "ipclk";
+			clocks = <&cmu_peric1 CLK_GOUT_PERIC1_USI08_I2C_PCLK>,
+				 <&cmu_peric1 CLK_GOUT_PERIC1_USI08_I2C_IPCLK>;
+
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			samsung,sysreg = <&sysreg_peric1 0x102c>;
+			status = "disabled";
+
+			hsi2c_21: i2c@108f0000 {
+				compatible = "samsung,exynosautov9-hsi2c";
+				reg = <0x108f0000 0xc0>;
+				interrupts = <GIC_SPI 419 IRQ_TYPE_LEVEL_HIGH>;
+
+				clock-names = "hsi2c",
+					      "hsi2c_pclk";
+				clocks = <&cmu_peric1 CLK_GOUT_PERIC1_USI08_I2C_IPCLK>,
+					 <&cmu_peric1 CLK_GOUT_PERIC1_USI08_I2C_PCLK>;
+
+				#address-cells = <1>;
+				#size-cells = <0>;
+				status = "disabled";
+			};
+		};
+
+		usi10: usi@109200c0 {
+			compatible = "samsung,exynos850-usi";
+			reg = <0x109200c0 0x20>;
+			ranges;
+
+			clock-names = "pclk",
+				      "ipclk";
+			clocks = <&cmu_peric1 CLK_GOUT_PERIC1_USI10_USI_PCLK>,
+				 <&cmu_peric1 CLK_GOUT_PERIC1_USI10_USI_IPCLK>;
+
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			samsung,sysreg = <&sysreg_peric1 0x1038>;
+			status = "disabled";
+
+			hsi2c_24: i2c@10920000 {
+				compatible = "samsung,exynosautov9-hsi2c";
+				reg = <0x10920000 0xc0>;
+				interrupts = <GIC_SPI 422 IRQ_TYPE_LEVEL_HIGH>;
+
+				clock-names = "hsi2c",
+					      "hsi2c_pclk";
+				clocks = <&cmu_peric1 CLK_GOUT_PERIC1_USI10_USI_IPCLK>,
+					 <&cmu_peric1 CLK_GOUT_PERIC1_USI10_USI_PCLK>;
+
+				#address-cells = <1>;
+				#size-cells = <0>;
+				status = "disabled";
+			};
+		};
+
 		cmu_fsys0a: clock-controller@10a00000 {
 			compatible = "samsung,exynos9820-cmu-fsys0a";
 			reg = <0x10a00000 0x10000>;
@@ -1029,6 +1221,18 @@
 
 			samsung,pmu-syscon = <&pmu_system_controller>;
 
+			status = "disabled";
+		};
+
+		/* DisplayPort link controller, on the USB/DP combo PHY (phy index 2) */
+		displayport: displayport@130b0000 {
+			compatible = "samsung,exynos9820-dp";
+			reg = <0x130b0000 0x10000>;
+			interrupts = <GIC_SPI 248 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&cmu_top CLK_GOUT_CMU_FSYS0_DPGTC>;
+			clock-names = "gtc";
+			phys = <&usbdrd_phy 2>;
+			phy-names = "dp";
 			status = "disabled";
 		};
 
@@ -1367,6 +1571,8 @@
 			#power-domain-cells = <0>;
 			/* power-domains = <&pd_dpu>; */
 			label = "ISPPRE";
+			/* stock need_smc: EL3 restores the block's TZPC on power-up */
+			samsung,tzpc-base = <0x17010204>;
 		};
 
 		pd_iva: power-domain@15862580 {
@@ -1441,6 +1647,38 @@
 
 			wakeup-interrupt-controller {
 				compatible = "samsung,exynos7-wakeup-eint";
+			};
+		};
+
+		usi_i2c_cmgp1: usi@15d300c0 {
+			compatible = "samsung,exynos850-usi";
+			reg = <0x15d300c0 0x20>;
+			ranges;
+
+			clock-names = "pclk",
+				      "ipclk";
+			clocks = <&cmu_cmgp CLK_GOUT_CMGP_I2C_CMGP1_PCLK>,
+				 <&cmu_cmgp CLK_GOUT_CMGP_I2C_CMGP1_IPCLK>;
+
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			samsung,sysreg = <&sysreg_cmgp 0x2014>;
+			status = "disabled";
+
+			hsi2c_42: i2c@15d30000 {
+				compatible = "samsung,exynosautov9-hsi2c";
+				reg = <0x15d30000 0xc0>;
+				interrupts = <GIC_SPI 79 IRQ_TYPE_LEVEL_HIGH>;
+
+				clock-names = "hsi2c",
+					      "hsi2c_pclk";
+				clocks = <&cmu_cmgp CLK_GOUT_CMGP_I2C_CMGP1_IPCLK>,
+					 <&cmu_cmgp CLK_GOUT_CMGP_I2C_CMGP1_PCLK>;
+
+				#address-cells = <1>;
+				#size-cells = <0>;
+				status = "disabled";
 			};
 		};
 
@@ -1558,6 +1796,108 @@
 			power-domains = <&pd_aud>;
 			samsung,pmu-syscon = <&pmu_system_controller>;
 			#sound-dai-cells = <1>;
+			status = "disabled";
+		};
+
+		/*
+		 * CMU_ISPPRE is in pd_isppre, so it has runtime PM; S-Boot leaves
+		 * the bus at /16 (25 MHz), stock runs it undivided.
+		 */
+		cmu_isppre: clock-controller@17000000 {
+			compatible = "samsung,exynos9820-cmu-isppre";
+			reg = <0x17000000 0x10000>;
+			#clock-cells = <1>;
+
+			clock-names = "oscclk", "bus";
+			clocks = <&oscclk>,
+				 <&cmu_top CLK_DOUT_CMU_ISPPRE_BUS>;
+			assigned-clocks = <&cmu_top CLK_DOUT_CMU_ISPPRE_BUS>,
+					  <&cmu_isppre CLK_MOUT_ISPPRE_BUS_USER>;
+			assigned-clock-rates = <400000000>, <0>;
+			assigned-clock-parents = <0>,
+						 <&cmu_top CLK_DOUT_CMU_ISPPRE_BUS>;
+			power-domains = <&pd_isppre>;
+		};
+
+		/*
+		 * Camera receivers: CSIS n with write DMA n (VC0 straight to
+		 * memory). The PHYs sit in the DPU block; their isolation is in the
+		 * PMU (0x70c for CSIS0, shared with the DSI: only ever set, 0x730
+		 * for the others) and their resets in SYSREG_ISPPRE 0x500. Never
+		 * the CMU pclk, XIU_P or LHM_AXI_P clocks here: turning those off
+		 * cuts the ISPPRE P-bus.
+		 */
+		csis0: csis@17030000 {
+			compatible = "samsung,exynos9820-csis";
+			reg = <0x17030000 0x1000>, <0x170a0000 0x1000>,
+			      <0x19160b00 0x500>, <0x170e0000 0x100>,
+			      <0x17020000 0x1000>, <0x1586070c 0x4>;
+			reg-names = "csis", "wdma", "phy", "dma-top", "sysreg", "pmu-iso";
+			interrupts = <GIC_SPI 309 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 315 IRQ_TYPE_LEVEL_HIGH>;
+			interrupt-names = "csis", "dma";
+			clocks = <&cmu_isppre CLK_GOUT_ISPPRE_CSIS0_ACLK>,
+				 <&cmu_isppre CLK_GOUT_ISPPRE_CSISX4_PDP_DMA_ACLK>,
+				 <&cmu_isppre CLK_GOUT_ISPPRE_SYSMMU_ISPPRE_ACLK>,
+				 <&cmu_isppre CLK_GOUT_ISPPRE_XIU_D_ISPPRE_ACLK>,
+				 <&cmu_isppre CLK_GOUT_ISPPRE_C2CLK_CSISX4_PDP>,
+				 <&cmu_isppre CLK_GOUT_ISPPRE_QE_CSISX4_PDP_ACLK>,
+				 <&cmu_isppre CLK_GOUT_ISPPRE_QE_CSISX4_PDP_PCLK>,
+				 <&cmu_isppre CLK_GOUT_ISPPRE_LHS_AXI_D_ISPPRE_CLK>,
+				 <&cmu_isppre CLK_GOUT_ISPPRE_SYSREG_ISPPRE_PCLK>;
+			power-domains = <&pd_isppre>;
+			samsung,csis-id = <0>;
+			samsung,phy-reset-bit = <0>;
+			samsung,dc-combo-phy;
+			status = "disabled";
+		};
+
+		csis1: csis@17040000 {
+			compatible = "samsung,exynos9820-csis";
+			reg = <0x17040000 0x1000>, <0x170b0000 0x1000>,
+			      <0x19162b00 0x500>, <0x170e0000 0x100>,
+			      <0x17020000 0x1000>, <0x15860730 0x4>;
+			reg-names = "csis", "wdma", "phy", "dma-top", "sysreg", "pmu-iso";
+			interrupts = <GIC_SPI 310 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 316 IRQ_TYPE_LEVEL_HIGH>;
+			interrupt-names = "csis", "dma";
+			clocks = <&cmu_isppre CLK_GOUT_ISPPRE_CSIS1_ACLK>,
+				 <&cmu_isppre CLK_GOUT_ISPPRE_CSISX4_PDP_DMA_ACLK>,
+				 <&cmu_isppre CLK_GOUT_ISPPRE_SYSMMU_ISPPRE_ACLK>,
+				 <&cmu_isppre CLK_GOUT_ISPPRE_XIU_D_ISPPRE_ACLK>,
+				 <&cmu_isppre CLK_GOUT_ISPPRE_C2CLK_CSISX4_PDP>,
+				 <&cmu_isppre CLK_GOUT_ISPPRE_QE_CSISX4_PDP_ACLK>,
+				 <&cmu_isppre CLK_GOUT_ISPPRE_QE_CSISX4_PDP_PCLK>,
+				 <&cmu_isppre CLK_GOUT_ISPPRE_LHS_AXI_D_ISPPRE_CLK>,
+				 <&cmu_isppre CLK_GOUT_ISPPRE_SYSREG_ISPPRE_PCLK>;
+			power-domains = <&pd_isppre>;
+			samsung,csis-id = <1>;
+			samsung,phy-reset-bit = <2>;
+			status = "disabled";
+		};
+
+		csis2: csis@17050000 {
+			compatible = "samsung,exynos9820-csis";
+			reg = <0x17050000 0x1000>, <0x170c0000 0x1000>,
+			      <0x19162300 0x500>, <0x170e0000 0x100>,
+			      <0x17020000 0x1000>, <0x15860730 0x4>;
+			reg-names = "csis", "wdma", "phy", "dma-top", "sysreg", "pmu-iso";
+			interrupts = <GIC_SPI 311 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 317 IRQ_TYPE_LEVEL_HIGH>;
+			interrupt-names = "csis", "dma";
+			clocks = <&cmu_isppre CLK_GOUT_ISPPRE_CSIS2_ACLK>,
+				 <&cmu_isppre CLK_GOUT_ISPPRE_CSISX4_PDP_DMA_ACLK>,
+				 <&cmu_isppre CLK_GOUT_ISPPRE_SYSMMU_ISPPRE_ACLK>,
+				 <&cmu_isppre CLK_GOUT_ISPPRE_XIU_D_ISPPRE_ACLK>,
+				 <&cmu_isppre CLK_GOUT_ISPPRE_C2CLK_CSISX4_PDP>,
+				 <&cmu_isppre CLK_GOUT_ISPPRE_QE_CSISX4_PDP_ACLK>,
+				 <&cmu_isppre CLK_GOUT_ISPPRE_QE_CSISX4_PDP_PCLK>,
+				 <&cmu_isppre CLK_GOUT_ISPPRE_LHS_AXI_D_ISPPRE_CLK>,
+				 <&cmu_isppre CLK_GOUT_ISPPRE_SYSREG_ISPPRE_PCLK>;
+			power-domains = <&pd_isppre>;
+			samsung,csis-id = <2>;
+			samsung,phy-reset-bit = <1>;
+			samsung,dc-combo-phy;
 			status = "disabled";
 		};
 

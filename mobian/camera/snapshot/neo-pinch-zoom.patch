@@ -1,0 +1,278 @@
+Index: gnome-snapshot-51.0/aperture/src/viewfinder.rs
+===================================================================
+--- gnome-snapshot-51.0.orig/aperture/src/viewfinder.rs
++++ gnome-snapshot-51.0/aperture/src/viewfinder.rs
+@@ -71,6 +71,8 @@ mod imp {
+         pub timeout_handler: RefCell<Option<glib::SourceId>>,
+ 
+         pub picture: gtk::Picture,
++        /// magnification of the drawn viewfinder on top of camerabin's zoom (0 = none), during a pinch
++        pub preview_zoom: Cell<f64>,
+         pub offload: gtk::GraphicsOffload,
+     }
+ 
+@@ -446,15 +448,28 @@ mod imp {
+         }
+ 
+         fn snapshot(&self, snapshot: &gtk::Snapshot) {
++            let obj = self.obj();
++            let (w, h) = (obj.width() as f32, obj.height() as f32);
++            // a pinch in progress: the frames magnified at draw time (GPU), around the centre, clipped
++            let z = self.preview_zoom.get() as f32;
++            let zoomed = z > 0.0 && (z - 1.0).abs() > 0.001;
++            if zoomed {
++                snapshot.push_clip(&graphene::Rect::new(0.0, 0.0, w, h));
++            }
++            snapshot.save();
++            if zoomed {
++                snapshot.translate(&graphene::Point::new(w / 2.0, h / 2.0));
++                snapshot.scale(z, z);
++                snapshot.translate(&graphene::Point::new(-w / 2.0, -h / 2.0));
++            }
+             if self.is_front_camera.get() {
+-                let w = self.obj().width() as f32;
+-                snapshot.save();
+                 snapshot.translate(&graphene::Point::new(w, 0.0));
+                 snapshot.scale(-1.0, 1.0);
+-                self.parent_snapshot(snapshot);
+-                snapshot.restore();
+-            } else {
+-                self.parent_snapshot(snapshot);
++            }
++            self.parent_snapshot(snapshot);
++            snapshot.restore();
++            if zoomed {
++                snapshot.pop();
+             }
+         }
+     }
+@@ -582,6 +597,34 @@ impl Viewfinder {
+     ///
+     /// This operation may take a while. The resolution might be changed
+     /// temporarily, autofocusing might take place, etc. Basically
++    /// Sets the digital zoom (1.0 = none), camerabin's own: the camera source is cropped and scaled back, so the
++    /// viewfinder, pictures and videos all get it. Clamped to 1.0 ..= 8.0 (and camerabin's max-zoom); returns the
++    /// factor applied.
++    pub fn set_zoom(&self, zoom: f64) -> f64 {
++        let camerabin = self.imp().camerabin();
++        let max = (camerabin.property::<f32>("max-zoom") as f64).clamp(1.0, 8.0);
++        let zoom = zoom.clamp(1.0, max);
++        camerabin.set_property("zoom", zoom as f32);
++        zoom
++    }
++
++    /// The largest zoom set_zoom() applies.
++    pub fn max_zoom(&self) -> f64 {
++        (self.imp().camerabin().property::<f32>("max-zoom") as f64).clamp(1.0, 8.0)
++    }
++
++    /// Magnifies the drawn viewfinder by `factor` on top of the zoom in use, without touching the pipeline:
++    /// smooth while a pinch is in progress. 1.0 = off.
++    pub fn set_preview_zoom(&self, factor: f64) {
++        self.imp().preview_zoom.set(factor);
++        self.queue_draw();
++    }
++
++    /// The digital zoom in use (1.0 = none).
++    pub fn zoom(&self) -> f64 {
++        self.imp().camerabin().property::<f32>("zoom") as f64
++    }
++
+     /// everything you'd expect to happen when you click the photo button in
+     /// a camera app.
+     ///
+@@ -935,6 +978,19 @@ impl Viewfinder {
+                     .build(),
+             )
+             .item(
++                // Venus/IRIS1 (the POCO X3 NFC): its firmware ignores the bitrate (VBR and most CBR targets came out
++                // at ~60 Mbit/s for 1080p60), but holds a QP range: 24..42 is ~17 Mbit/s at worst, less from a camera
++                ElementPropertiesMapItem::builder("v4l2h264enc")
++                    .field(
++                        "extra-controls",
++                        gst::Structure::builder("controls")
++                            .field("h264_minimum_qp_value", 24i32)
++                            .field("h264_maximum_qp_value", 42i32)
++                            .build(),
++                    )
++                    .build(),
++            )
++            .item(
+                 ElementPropertiesMapItem::builder("vulkanh264enc")
+                     .field("bitrate", DEFAULT_BITRATE)
+                     .build(),
+Index: gnome-snapshot-51.0/data/resources/ui/camera.ui
+===================================================================
+--- gnome-snapshot-51.0.orig/data/resources/ui/camera.ui
++++ gnome-snapshot-51.0/data/resources/ui/camera.ui
+@@ -100,6 +100,24 @@
+                     <child>
+                       <object class="GtkOverlay">
+                         <child type="overlay">
++                          <object class="GtkRevealer" id="zoom_revealer">
++                            <property name="halign">center</property>
++                            <property name="valign">center</property>
++                            <property name="can-target">false</property>
++                            <property name="transition-type">crossfade</property>
++                            <child>
++                              <object class="GtkLabel" id="zoom_label">
++                                <style>
++                                  <class name="heading"/>
++                                  <class name="numeric"/>
++                                  <class name="osd"/>
++                                  <class name="zoom-label"/>
++                                </style>
++                              </object>
++                            </child>
++                          </object>
++                        </child>
++                        <child type="overlay">
+                           <object class="GtkRevealer" id="recording_revealer">
+                             <property name="halign">center</property>
+                             <property name="valign">end</property>
+Index: gnome-snapshot-51.0/src/widgets/camera.rs
+===================================================================
+--- gnome-snapshot-51.0.orig/src/widgets/camera.rs
++++ gnome-snapshot-51.0/src/widgets/camera.rs
+@@ -53,6 +53,17 @@ mod imp {
+         pub dual_portrait_bp: TemplateChild<adw::Breakpoint>,
+ 
+         #[template_child]
++        pub zoom_revealer: TemplateChild<gtk::Revealer>,
++        #[template_child]
++        pub zoom_label: TemplateChild<gtk::Label>,
++        /// the zoom when the current pinch started, and the timeout that hides the indicator
++        pub zoom_start: Cell<f64>,
++        /// the zoom the current pinch asks for, applied to the pipeline when the fingers lift
++        pub zoom_target: Cell<f64>,
++        pub zoom_settle: RefCell<Option<glib::SourceId>>,
++        pub zoom_hide: RefCell<Option<glib::SourceId>>,
++
++        #[template_child]
+         pub recording_revealer: TemplateChild<gtk::Revealer>,
+         #[template_child]
+         pub recording_label: TemplateChild<gtk::Label>,
+@@ -172,6 +183,73 @@ mod imp {
+ 
+             obj.add_controller(controller);
+ 
++            // Pinch to zoom (digital, camerabin's): the factor follows the pinch from the zoom it started at. On the
++            // whole camera page in the capture phase: the controls' overlay covers the viewfinder and took the
++            // touches before a gesture on the viewfinder saw them; one finger still reaches the buttons.
++            let zoom_gesture = gtk::GestureZoom::new();
++            zoom_gesture.set_propagation_phase(gtk::PropagationPhase::Capture);
++            // While the fingers move only the drawn viewfinder is magnified (smooth, on the GPU); camerabin's zoom,
++            // which crops and rescales the stream (and stuttered when set at every step), is set when they lift.
++            zoom_gesture.connect_begin(glib::clone!(
++                #[weak]
++                obj,
++                move |_, _| {
++                    let imp = obj.imp();
++                    if let Some(id) = imp.zoom_settle.take() {
++                        id.remove();
++                    }
++                    let zoom = imp.viewfinder.zoom();
++                    imp.zoom_start.set(zoom);
++                    imp.zoom_target.set(zoom);
++                }
++            ));
++            zoom_gesture.connect_scale_changed(glib::clone!(
++                #[weak]
++                obj,
++                move |_, scale| {
++                    let imp = obj.imp();
++                    let applied = imp.zoom_start.get();
++                    let target = (applied * scale).clamp(1.0, imp.viewfinder.max_zoom());
++                    imp.zoom_target.set(target);
++                    imp.viewfinder.set_preview_zoom(target / applied);
++                    obj.show_zoom(target);
++                }
++            ));
++            let apply_zoom = glib::clone!(
++                #[weak]
++                obj,
++                move || {
++                    let imp = obj.imp();
++                    let target = imp.zoom_target.get();
++                    if (target - imp.viewfinder.zoom()).abs() < 0.01 {
++                        imp.viewfinder.set_preview_zoom(1.0);
++                        return;
++                    }
++                    let zoom = imp.viewfinder.set_zoom(target);
++                    log::debug!("zoom {zoom:.2}");
++                    // keep the magnified preview until frames with the new crop are through
++                    let id = glib::timeout_add_local_once(
++                        std::time::Duration::from_millis(250),
++                        glib::clone!(
++                            #[weak]
++                            obj,
++                            move || {
++                                let imp = obj.imp();
++                                imp.zoom_settle.replace(None);
++                                imp.viewfinder.set_preview_zoom(1.0);
++                            }
++                        ),
++                    );
++                    if let Some(old) = imp.zoom_settle.replace(Some(id)) {
++                        old.remove();
++                    }
++                }
++            );
++            let apply = apply_zoom.clone();
++            zoom_gesture.connect_end(move |_, _| apply());
++            zoom_gesture.connect_cancel(move |_, _| apply_zoom());
++            obj.add_controller(zoom_gesture);
++
+             provider.connect_camera_added(glib::clone!(
+                 #[weak]
+                 obj,
+@@ -485,6 +563,35 @@ impl Camera {
+         }
+ 
+         imp.viewfinder.set_camera(camera);
++        // a new camera starts unzoomed
++        imp.viewfinder.set_zoom(1.0);
++        imp.viewfinder.set_preview_zoom(1.0);
++        imp.zoom_revealer.set_reveal_child(false);
++    }
++
++    /// Shows the zoom factor ("2.0×") for a moment.
++    fn show_zoom(&self, zoom: f64) {
++        let imp = self.imp();
++
++        imp.zoom_label.set_label(&format!("{zoom:.1}×"));
++        imp.zoom_revealer.set_reveal_child(true);
++
++        if let Some(id) = imp.zoom_hide.take() {
++            id.remove();
++        }
++        let id = glib::timeout_add_local_once(
++            std::time::Duration::from_millis(1200),
++            glib::clone!(
++                #[weak(rename_to = obj)]
++                self,
++                move || {
++                    let imp = obj.imp();
++                    imp.zoom_hide.replace(None);
++                    imp.zoom_revealer.set_reveal_child(false);
++                }
++            ),
++        );
++        imp.zoom_hide.replace(Some(id));
+     }
+ 
+     fn play_shutter_sound(&self) {
+Index: gnome-snapshot-51.0/data/resources/style.css
+===================================================================
+--- gnome-snapshot-51.0.orig/data/resources/style.css
++++ gnome-snapshot-51.0/data/resources/style.css
+@@ -87,3 +87,9 @@ camera .recording-label {
+ camera.portrait .recording-label {
+   margin-bottom: 24px;
+ }
++
++/* the pinch-to-zoom factor, a pill in the middle of the viewfinder */
++camera .zoom-label {
++  padding: 6px 14px;
++  border-radius: 999px;
++}

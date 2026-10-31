@@ -1,0 +1,300 @@
+From: pulpoff <pashkovsky@gmail.com>
+Subject: Neo draws the task view: drag progress and window list over D-Bus
+
+In Neo mode Phosh no longer shows its own cards or the big drag thumbnail.
+de.yesman.PhoshNeo gains the signals RecentsDrag(progress), RecentsHold and
+RecentsEnd("home"|"recents"), and the methods GetWindows (id, app id, title,
+raw ARGB32 thumbnail on the runtime dir, size, stride, focused), Activate,
+Close and CloseAll.
+---
+diff -ruN a/src/activity.c b/src/activity.c
+--- a/src/activity.c	2026-10-09 19:36:21.884175897 +0200
++++ b/src/activity.c	2026-10-09 19:33:59.808253791 +0200
+@@ -918,3 +918,20 @@
+   gtk_image_set_pixel_size (GTK_IMAGE (priv->icon), on ? 24 : 48);
+   gtk_widget_set_margin_top (priv->preview, on ? 36 : 4);
+ }
++
++
++/**
++ * phosh_activity_get_thumbnail_surface:
++ * @self: The activity
++ *
++ * Returns:(transfer none)(nullable): the window's last thumbnail (Neo's recents draw it)
++ */
++cairo_surface_t *
++phosh_activity_get_thumbnail_surface (PhoshActivity *self)
++{
++  PhoshActivityPrivate *priv;
++
++  g_return_val_if_fail (PHOSH_IS_ACTIVITY (self), NULL);
++  priv = phosh_activity_get_instance_private (self);
++  return priv->surface;
++}
+diff -ruN a/src/activity.h b/src/activity.h
+--- a/src/activity.h	2026-10-09 19:36:21.884230335 +0200
++++ b/src/activity.h	2026-10-09 19:33:59.808325890 +0200
+@@ -24,3 +24,4 @@
+ gboolean    phosh_activity_get_has_thumbnail (PhoshActivity *self);
+ GAppInfo *  phosh_activity_get_app_info (PhoshActivity *self);
+ void        phosh_activity_set_neo_chip (PhoshActivity *self, gboolean on);
++cairo_surface_t *phosh_activity_get_thumbnail_surface (PhoshActivity *self);
+diff -ruN a/src/home.c b/src/home.c
+--- a/src/home.c	2026-10-09 19:36:21.881979084 +0200
++++ b/src/home.c	2026-10-09 19:36:15.284288472 +0200
+@@ -19,6 +19,7 @@
+ #include "shell.h"
+ #include "phosh-enums.h"
+ #include "osk-manager.h"
++#include "phosh-wayland.h"
+ #include "style-manager.h"
+ #include "toplevel-manager.h"
+ #include "toplevel-thumbnail.h"
+@@ -123,6 +124,13 @@
+   "    <method name='ShowOverview'/>"
+   "    <method name='Fold'/>"
+   "    <signal name='WindowShown'><arg type='s' name='app_id'/></signal>"
++  "    <signal name='RecentsDrag'><arg type='d' name='progress'/></signal>"
++  "    <signal name='RecentsHold'/>"
++  "    <signal name='RecentsEnd'><arg type='s' name='result'/></signal>"
++  "    <method name='GetWindows'><arg type='a(ssssuuub)' name='windows' direction='out'/></method>"
++  "    <method name='Activate'><arg type='s' name='id' direction='in'/></method>"
++  "    <method name='Close'><arg type='s' name='id' direction='in'/></method>"
++  "    <method name='CloseAll'/>"
+   "  </interface>"
+   "</node>";
+ 
+@@ -213,6 +221,88 @@
+ 
+ 
+ static void
++neo_emit (PhoshHome *self, const char *signal, GVariant *params)
++{
++  if (self->neo_bus)
++    g_dbus_connection_emit_signal (self->neo_bus, NULL, NEO_PHOSH_OBJ, NEO_PHOSH_BUS, signal, params, NULL);
++  else if (params)
++    g_variant_unref (g_variant_ref_sink (params));
++}
++
++
++/* A window's id for Neo: stable while it lives */
++static char *
++neo_window_id (PhoshToplevel *toplevel)
++{
++  return g_strdup_printf ("%p", toplevel);
++}
++
++
++static PhoshToplevel *
++neo_find_window (const char *id)
++{
++  PhoshToplevelManager *m = phosh_shell_get_toplevel_manager (phosh_shell_get_default ());
++
++  for (guint i = 0; i < phosh_toplevel_manager_get_num_toplevels (m); i++) {
++    PhoshToplevel *t = phosh_toplevel_manager_get_toplevel (m, i);
++    g_autofree char *tid = neo_window_id (t);
++
++    if (g_strcmp0 (tid, id) == 0)
++      return t;
++  }
++  return NULL;
++}
++
++
++/* Neo's recents: every window with its thumbnail as raw cairo ARGB32 (BGRA in memory, premultiplied) on the
++ * runtime tmpfs, so Neo makes a texture of it without decoding anything */
++static GVariant *
++neo_get_windows (PhoshHome *self)
++{
++  GVariantBuilder builder;
++  g_autofree char *dir = g_build_filename (g_get_user_runtime_dir (), "neo-recents", NULL);
++  g_autoptr (GList) activities = phosh_overview_get_activities (self->overview);
++  PhoshToplevel *focused = phosh_overview_get_focused_toplevel (self->overview);
++
++  g_mkdir_with_parents (dir, 0700);
++  g_variant_builder_init (&builder, G_VARIANT_TYPE ("a(ssssuuub)"));
++  for (GList *l = activities; l; l = l->next) {
++    PhoshActivity *activity;
++    PhoshToplevel *toplevel;
++    cairo_surface_t *surface;
++    g_autofree char *id = NULL;
++    g_autofree char *path = NULL;
++    guint w = 0, h = 0, stride = 0;
++
++    if (!PHOSH_IS_ACTIVITY (l->data))
++      continue;
++    activity = PHOSH_ACTIVITY (l->data);
++    toplevel = phosh_overview_get_toplevel_from_activity (self->overview, activity);
++    if (!toplevel)
++      continue;
++    id = neo_window_id (toplevel);
++    surface = phosh_activity_get_thumbnail_surface (activity);
++    if (surface && cairo_surface_get_type (surface) == CAIRO_SURFACE_TYPE_IMAGE &&
++        cairo_image_surface_get_format (surface) == CAIRO_FORMAT_ARGB32) {
++      cairo_surface_flush (surface);
++      w = cairo_image_surface_get_width (surface);
++      h = cairo_image_surface_get_height (surface);
++      stride = cairo_image_surface_get_stride (surface);
++      path = g_strdup_printf ("%s/%s.raw", dir, id);
++      if (!g_file_set_contents (path, (const char *) cairo_image_surface_get_data (surface), (gssize) stride * h, NULL))
++        g_clear_pointer (&path, g_free);
++    }
++    g_variant_builder_add (&builder, "(ssssuuub)", id,
++                           phosh_toplevel_get_app_id (toplevel) ?: "",
++                           phosh_toplevel_get_title (toplevel) ?: "",
++                           path ?: "", path ? w : 0, path ? h : 0, path ? stride : 0,
++                           toplevel == focused);
++  }
++  return g_variant_new ("(a(ssssuuub))", &builder);
++}
++
++
++static void
+ neo_phosh_method_call (GDBusConnection       *connection,
+                        const char            *sender,
+                        const char            *object_path,
+@@ -228,6 +318,24 @@
+     neo_show_recents (self);
+   } else if (g_strcmp0 (method_name, "Fold") == 0) {
+     phosh_home_set_state (self, PHOSH_HOME_STATE_FOLDED);
++  } else if (g_strcmp0 (method_name, "GetWindows") == 0) {
++    g_dbus_method_invocation_return_value (invocation, neo_get_windows (self));
++    return;
++  } else if (g_strcmp0 (method_name, "Activate") == 0 || g_strcmp0 (method_name, "Close") == 0) {
++    const char *id;
++    PhoshToplevel *toplevel;
++
++    g_variant_get (parameters, "(&s)", &id);
++    toplevel = neo_find_window (id);
++    if (toplevel && method_name[0] == 'A')
++      phosh_toplevel_activate (toplevel, phosh_wayland_get_wl_seat (phosh_wayland_get_default ()));
++    else if (toplevel)
++      phosh_toplevel_close (toplevel);
++  } else if (g_strcmp0 (method_name, "CloseAll") == 0) {
++    PhoshToplevelManager *m = phosh_shell_get_toplevel_manager (phosh_shell_get_default ());
++
++    for (int i = (int) phosh_toplevel_manager_get_num_toplevels (m) - 1; i >= 0; i--)
++      phosh_toplevel_close (phosh_toplevel_manager_get_toplevel (m, i));
+   }
+   g_dbus_method_invocation_return_value (invocation, NULL);
+ }
+@@ -251,17 +359,6 @@
+ 
+ 
+ static gboolean
+-neo_recents_cb (gpointer data)
+-{
+-  PhoshHome *self = PHOSH_HOME (data);
+-
+-  self->neo_fold_id = 0;
+-  neo_show_recents (self);
+-  return G_SOURCE_REMOVE;
+-}
+-
+-
+-static gboolean
+ neo_hold_cb (gpointer data)
+ {
+   PhoshHome *self = PHOSH_HOME (data);
+@@ -272,12 +369,8 @@
+     return G_SOURCE_REMOVE;
+   /* the finger rests with the bar pulled up: recents. The running apps fade in under the finger. */
+   self->neo_hold = TRUE;
+-  gtk_widget_set_visible (GTK_WIDGET (phosh_overview_get_app_grid (self->overview)), FALSE);
+-  phosh_overview_set_neo_recents (self->overview, TRUE);
+-  /* the app's big drag thumbnail gives way to the cards at once (it shrank only with the finger's travel) */
+-  g_clear_pointer (&self->thumbnail_overlay, phosh_cp_widget_destroy);
+-  phosh_overview_set_active_activity_opacity (self->overview, 1.0);
+-  gtk_widget_set_opacity (GTK_WIDGET (self->overview), 1.0);
++  /* Neo draws the task view: tell it the finger rests, so the other apps' cards come in */
++  neo_emit (self, "RecentsHold", NULL);
+   return G_SOURCE_REMOVE;
+ }
+ 
+@@ -876,6 +969,7 @@
+     }
+     self->neo_drag_progress = progress;
+     self->neo_drag_max = MAX (self->neo_drag_max, progress);
++    neo_emit (self, "RecentsDrag", g_variant_new ("(d)", progress));
+   }
+ }
+ 
+@@ -893,11 +987,14 @@
+   case PHOSH_DRAG_SURFACE_STATE_UNFOLDED:
+     g_clear_handle_id (&self->neo_hold_id, g_source_remove);
+     if (self->neo_hold) {
+-      /* swipe up and hold: stay on the overview, as recents */
++      /* swipe up and hold: Neo's task view; Phosh's home folds back unseen */
+       self->neo_hold = FALSE;
+       self->neo_drag_max = self->neo_drag_progress = 0;
+-      self->neo_allow_overview = TRUE;
++      neo_emit (self, "RecentsEnd", g_variant_new ("(s)", "recents"));
++      if (!self->neo_fold_id)
++        self->neo_fold_id = g_idle_add (neo_fold_cb, self);
+     } else if (neo_takes_home (self)) {
++      neo_emit (self, "RecentsEnd", g_variant_new ("(s)", "home"));
+       /* Neo is the launcher: show it, and fold the (hidden) overview back right away */
+       neo_show_launcher ();
+       if (!self->neo_fold_id)
+@@ -919,13 +1016,12 @@
+   case PHOSH_DRAG_SURFACE_STATE_FOLDED:
+     g_clear_handle_id (&self->neo_hold_id, g_source_remove);
+     if (self->neo_hold) {
+-      /* held, then let go below Phosh's own threshold: recents all the same */
++      /* held, then let go below Phosh's own threshold: the task view all the same */
+       self->neo_hold = FALSE;
+-      self->neo_drag_max = self->neo_drag_progress = 0;
+-      if (!self->neo_fold_id)
+-        self->neo_fold_id = g_idle_add (neo_recents_cb, self);
++      neo_emit (self, "RecentsEnd", g_variant_new ("(s)", "recents"));
+     } else if (self->neo_drag_max > 0.03 && self->state == PHOSH_HOME_STATE_TRANSITION && neo_takes_home (self)) {
+       /* a short swipe up that Phosh lets snap back is still "home" */
++      neo_emit (self, "RecentsEnd", g_variant_new ("(s)", "home"));
+       neo_show_launcher ();
+     }
+     self->neo_drag_max = self->neo_drag_progress = 0;
+@@ -947,7 +1043,9 @@
+       if (neo_takes_home (self))
+         gtk_widget_set_opacity (GTK_WIDGET (self->overview), 0.0);
+       phosh_overview_refresh (self->overview);
+-      update_thumbnail_overlay_from_focused (self);
++      /* Neo draws the shrinking app itself */
++      if (!neo_takes_home (self))
++        update_thumbnail_overlay_from_focused (self);
+     } else if (self->state == PHOSH_HOME_STATE_UNFOLDED) {
+       self->unfolding = TRUE;
+ 
+diff -ruN a/src/overview.c b/src/overview.c
+--- a/src/overview.c	2026-10-09 19:36:21.884303115 +0200
++++ b/src/overview.c	2026-10-09 19:33:59.808400566 +0200
+@@ -1079,3 +1079,20 @@
+   else
+     gtk_style_context_remove_class (gtk_widget_get_style_context (GTK_WIDGET (self)), "neo-recents");
+ }
++
++
++/**
++ * phosh_overview_get_activities:
++ * @self: The overview
++ *
++ * Returns:(transfer container)(element-type PhoshActivity): the running activities, as the carousel orders them
++ */
++GList *
++phosh_overview_get_activities (PhoshOverview *self)
++{
++  PhoshOverviewPrivate *priv;
++
++  g_return_val_if_fail (PHOSH_IS_OVERVIEW (self), NULL);
++  priv = phosh_overview_get_instance_private (self);
++  return gtk_container_get_children (GTK_CONTAINER (priv->carousel_running_activities));
++}
+diff -ruN a/src/overview.h b/src/overview.h
+--- a/src/overview.h	2026-10-09 19:36:21.884352752 +0200
++++ b/src/overview.h	2026-10-09 19:33:59.808451787 +0200
+@@ -35,5 +35,6 @@
+                                                          GtkAllocation *alloc,
+                                                          int           *y_off);
+ void           phosh_overview_set_neo_recents (PhoshOverview *self, gboolean on);
++GList         *phosh_overview_get_activities (PhoshOverview *self);
+ 
+ G_END_DECLS

@@ -1,0 +1,4 @@
+# The Camera records H.264 through the Venus hardware encoder by default (gnome/device/camera/snapshot):
+# 1080p at ~67 fps against x264's 28, and the CPU stays free for the soft ISP
+[org.gnome.Snapshot]
+enable-hardware-encoding=true

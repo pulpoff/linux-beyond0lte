@@ -1,0 +1,179 @@
+Description: Neo recents: half-height cards, app chips, Close all
+ In Neo mode the overview is only the running apps (the app grid is Neo's): cards at about half the
+ screen height with a 28 px gap, the app icon and name in a chip above each card, "Close all" below.
+ phosh_overview_set_neo_recents() switches it; stock Phosh never calls it.
+Author: pulpoff <pashkovsky@gmail.com>
+Forwarded: no
+---
+diff --git a/src/activity.c b/src/activity.c
+index 7cc4055..19a7342 100644
+--- a/src/activity.c
++++ b/src/activity.c
+@@ -878,3 +878,43 @@ phosh_activity_get_app_info (PhoshActivity *self)
+ 
+   return priv->app_info;
+ }
++
++
++/**
++ * phosh_activity_set_neo_chip:
++ * @self: The activity
++ * @on: Whether to show the Neo chip
++ *
++ * Neo's recents: the app icon (small) and name in a chip above the window preview, as Android draws them,
++ * instead of the big icon at the bottom of the card.
++ */
++void
++phosh_activity_set_neo_chip (PhoshActivity *self, gboolean on)
++{
++  PhoshActivityPrivate *priv;
++  GtkWidget *label;
++
++  g_return_if_fail (PHOSH_IS_ACTIVITY (self));
++  priv = phosh_activity_get_instance_private (self);
++
++  label = g_object_get_data (G_OBJECT (self), "neo-chip-label");
++  if (on && !label) {
++    const char *name = priv->app_info ? g_app_info_get_display_name (priv->app_info) :
++      phosh_activity_get_app_id (self);
++
++    label = gtk_label_new (name);
++    gtk_label_set_ellipsize (GTK_LABEL (label), PANGO_ELLIPSIZE_END);
++    gtk_style_context_add_class (gtk_widget_get_style_context (label), "neo-chip-label");
++    gtk_box_pack_end (GTK_BOX (priv->box), label, FALSE, FALSE, 0);
++    g_object_set_data (G_OBJECT (self), "neo-chip-label", label);
++  }
++  if (label)
++    gtk_widget_set_visible (label, on);
++
++  gtk_box_set_spacing (GTK_BOX (priv->box), on ? 8 : 0);
++  gtk_widget_set_valign (priv->box, on ? GTK_ALIGN_START : GTK_ALIGN_END);
++  gtk_widget_set_halign (priv->box, on ? GTK_ALIGN_CENTER : GTK_ALIGN_FILL);
++  gtk_widget_set_hexpand (priv->icon, !on);
++  gtk_image_set_pixel_size (GTK_IMAGE (priv->icon), on ? 24 : 48);
++  gtk_widget_set_margin_top (priv->preview, on ? 36 : 4);
++}
+diff --git a/src/activity.h b/src/activity.h
+index bfc6921..4c43349 100644
+--- a/src/activity.h
++++ b/src/activity.h
+@@ -23,3 +23,4 @@ void        phosh_activity_get_thumbnail_allocation (PhoshActivity *self,
+                                                      GtkAllocation *allocation);
+ gboolean    phosh_activity_get_has_thumbnail (PhoshActivity *self);
+ GAppInfo *  phosh_activity_get_app_info (PhoshActivity *self);
++void        phosh_activity_set_neo_chip (PhoshActivity *self, gboolean on);
+diff --git a/src/overview.c b/src/overview.c
+index 8df50c7..62b13cf 100644
+--- a/src/overview.c
++++ b/src/overview.c
+@@ -17,10 +17,12 @@
+ #include "phosh-wayland.h"
+ #include "shell-priv.h"
+ #include "toplevel-manager.h"
++#include "toplevel.h"
+ #include "toplevel-thumbnail.h"
+ #include "util.h"
+ 
+ #include <gio/gdesktopappinfo.h>
++#include <glib/gi18n.h>
+ 
+ #include <handy.h>
+ 
+@@ -1006,3 +1008,74 @@ phosh_overview_get_focused_activity_rect (PhoshOverview *self,
+ 
+   return TRUE;
+ }
++
++
++static void
++on_neo_close_all (PhoshOverview *self)
++{
++  PhoshToplevelManager *m = phosh_shell_get_toplevel_manager (phosh_shell_get_default ());
++
++  for (int i = (int) phosh_toplevel_manager_get_num_toplevels (m) - 1; i >= 0; i--)
++    phosh_toplevel_close (phosh_toplevel_manager_get_toplevel (m, i));
++}
++
++
++/**
++ * phosh_overview_set_neo_recents:
++ * @self: The overview
++ * @on: Whether the overview is Neo's recents
++ *
++ * Neo's recents (the app grid is Neo's job and hidden): the cards at about half the screen height with
++ * Android's 28 px gap, a chip with the app's icon and name above each card, and "Close all" at the bottom.
++ */
++void
++phosh_overview_set_neo_recents (PhoshOverview *self, gboolean on)
++{
++  PhoshOverviewPrivate *priv;
++  GtkWidget *carousel, *close_all;
++  g_autoptr (GList) children = NULL;
++  int height = 0;
++
++  g_return_if_fail (PHOSH_IS_OVERVIEW (self));
++  priv = phosh_overview_get_instance_private (self);
++  carousel = GTK_WIDGET (priv->carousel_running_activities);
++
++  if (on && !g_object_get_data (G_OBJECT (self), "neo-spacing"))
++    g_object_set_data (G_OBJECT (self), "neo-spacing",
++                       GUINT_TO_POINTER (hdy_carousel_get_spacing (priv->carousel_running_activities) + 1));
++
++  phosh_shell_get_usable_area (phosh_shell_get_default (), NULL, NULL, NULL, &height);
++  gtk_widget_set_margin_top (carousel, on ? (int) (height * 0.16) : 0);
++  gtk_widget_set_margin_bottom (carousel, on ? (int) (height * 0.30) : 0);
++  if (on) {
++    hdy_carousel_set_spacing (priv->carousel_running_activities, 28);
++  } else if (g_object_get_data (G_OBJECT (self), "neo-spacing")) {
++    hdy_carousel_set_spacing (priv->carousel_running_activities,
++                              GPOINTER_TO_UINT (g_object_get_data (G_OBJECT (self), "neo-spacing")) - 1);
++    g_object_set_data (G_OBJECT (self), "neo-spacing", NULL);
++  }
++
++  children = gtk_container_get_children (GTK_CONTAINER (carousel));
++  for (GList *l = children; l; l = l->next) {
++    if (PHOSH_IS_ACTIVITY (l->data))
++      phosh_activity_set_neo_chip (PHOSH_ACTIVITY (l->data), on);
++  }
++
++  close_all = g_object_get_data (G_OBJECT (self), "neo-close-all");
++  if (on && !close_all) {
++    close_all = gtk_button_new_with_label (_("Close all"));
++    gtk_style_context_add_class (gtk_widget_get_style_context (close_all), "neo-close-all");
++    gtk_widget_set_halign (close_all, GTK_ALIGN_CENTER);
++    gtk_widget_set_margin_bottom (close_all, 32);
++    g_signal_connect_object (close_all, "clicked", G_CALLBACK (on_neo_close_all), self, G_CONNECT_SWAPPED);
++    gtk_box_pack_end (GTK_BOX (self), close_all, FALSE, FALSE, 0);
++    g_object_set_data (G_OBJECT (self), "neo-close-all", close_all);
++  }
++  if (close_all)
++    gtk_widget_set_visible (close_all, on && priv->has_activities);
++
++  if (on)
++    gtk_style_context_add_class (gtk_widget_get_style_context (GTK_WIDGET (self)), "neo-recents");
++  else
++    gtk_style_context_remove_class (gtk_widget_get_style_context (GTK_WIDGET (self)), "neo-recents");
++}
+diff --git a/src/overview.h b/src/overview.h
+index 814896d..0d64a41 100644
+--- a/src/overview.h
++++ b/src/overview.h
+@@ -34,5 +34,6 @@ PhoshToplevel *phosh_overview_get_toplevel_from_activity (PhoshOverview *self,
+ gboolean       phosh_overview_get_focused_activity_rect (PhoshOverview *self,
+                                                          GtkAllocation *alloc,
+                                                          int           *y_off);
++void           phosh_overview_set_neo_recents (PhoshOverview *self, gboolean on);
+ 
+ G_END_DECLS
+diff --git a/src/stylesheet/common.css b/src/stylesheet/common.css
+index 2bb44a8..0c71389 100644
+--- a/src/stylesheet/common.css
++++ b/src/stylesheet/common.css
+@@ -1301,3 +1301,7 @@ levelbar trough {
+ calendar:selected {
+   background-color: @theme_selected_bg_color;
+ }
++
++/* Neo's recents (phosh_overview_set_neo_recents): app chip above each card, "Close all" pill */
++.neo-recents .neo-chip-label { color: white; font-weight: bold; }
++.neo-recents .neo-close-all { border-radius: 22px; padding: 10px 28px; background: alpha(#2a2d31, 0.85); color: white; }

@@ -1,0 +1,358 @@
+From: pulpoff <pashkovsky@gmail.com>
+Subject: Lock screen: a pattern lock (de.yesman.neo lock-type)
+
+With de.yesman.neo's lock-type set to 'pattern', the unlock page shows a 3x3
+dot grid instead of the keypad, as on Android: the dots joined in order (a dot
+passed over joins too) go to PAM as the password ("1478"), so the user's
+password is the pattern. Fewer than 4 dots or a wrong pattern turn red for a
+second. 'swipe' is Phosh's own require-unlock = false, set by Mobile Settings
+alongside; 'pin' keeps the keypad.
+---
+--- a/src/lockscreen.c	2026-10-10 01:14:21.662404029 +0200
++++ b/src/lockscreen.c	2026-10-10 01:14:38.191676805 +0200
+@@ -105,6 +105,17 @@
+   PhoshAuth          *auth;
+   GSettings          *lockscreen_settings;
+ 
++  /* Neo: the pattern lock (de.yesman.neo lock-type = 'pattern'); the dots join into the password */
++  GSettings          *neo_settings;
++  GtkWidget          *pattern;
++  GtkGesture         *pattern_drag;
++  char                pattern_seq[10];
++  guint               pattern_len;
++  double              pattern_x, pattern_y;
++  gboolean            pattern_active;
++  gboolean            pattern_error;
++  guint               pattern_clear_id;
++
+   struct {
+     GtkGesture *swipe_gesture;
+     double      x_start;
+@@ -373,6 +384,297 @@
+ }
+ 
+ 
++static void on_unlock_submit (PhoshLockscreen *self);
++
++/* --- Neo: the pattern lock ------------------------------------------------------------------------------------ */
++
++static gboolean
++pattern_mode (PhoshLockscreen *self)
++{
++  PhoshLockscreenPrivate *priv = phosh_lockscreen_get_instance_private (self);
++  g_autofree char *type = NULL;
++
++  if (!priv->neo_settings)
++    return FALSE;
++  type = g_settings_get_string (priv->neo_settings, "lock-type");
++  return g_strcmp0 (type, "pattern") == 0;
++}
++
++
++/* the grid: a square of three cells a side, centred in the widget */
++static void
++pattern_geometry (GtkWidget *widget, double *x0, double *y0, double *cell)
++{
++  double w = gtk_widget_get_allocated_width (widget);
++  double h = gtk_widget_get_allocated_height (widget);
++  double side = MIN (w, h);
++
++  *cell = side / 3.0;
++  *x0 = (w - side) / 2.0;
++  *y0 = (h - side) / 2.0;
++}
++
++
++static void
++pattern_dot_center (GtkWidget *widget, guint dot, double *cx, double *cy)
++{
++  double x0, y0, cell;
++
++  pattern_geometry (widget, &x0, &y0, &cell);
++  *cx = x0 + cell * (dot % 3) + cell / 2.0;
++  *cy = y0 + cell * (dot / 3) + cell / 2.0;
++}
++
++
++static gboolean
++pattern_has (PhoshLockscreen *self, guint dot)
++{
++  PhoshLockscreenPrivate *priv = phosh_lockscreen_get_instance_private (self);
++
++  for (guint i = 0; i < priv->pattern_len; i++) {
++    if (priv->pattern_seq[i] == '1' + dot)
++      return TRUE;
++  }
++  return FALSE;
++}
++
++
++static void
++pattern_append (PhoshLockscreen *self, guint dot)
++{
++  PhoshLockscreenPrivate *priv = phosh_lockscreen_get_instance_private (self);
++
++  if (priv->pattern_len >= 9 || pattern_has (self, dot))
++    return;
++  priv->pattern_seq[priv->pattern_len++] = '1' + dot;
++  priv->pattern_seq[priv->pattern_len] = '\0';
++}
++
++
++/* a dot under (x, y) joins the pattern; one passed over on the way (1 to 3 passes 2) joins first, as on Android */
++static void
++pattern_hit (PhoshLockscreen *self, double x, double y)
++{
++  PhoshLockscreenPrivate *priv = phosh_lockscreen_get_instance_private (self);
++  double x0, y0, cell;
++
++  pattern_geometry (priv->pattern, &x0, &y0, &cell);
++  for (guint dot = 0; dot < 9; dot++) {
++    double cx, cy;
++
++    pattern_dot_center (priv->pattern, dot, &cx, &cy);
++    if (hypot (x - cx, y - cy) > cell * 0.3 || pattern_has (self, dot))
++      continue;
++    if (priv->pattern_len > 0) {
++      guint last = priv->pattern_seq[priv->pattern_len - 1] - '1';
++      int dr = (int)(dot / 3) - (int)(last / 3), dc = (int)(dot % 3) - (int)(last % 3);
++
++      if ((dr % 2 == 0) && (dc % 2 == 0)) {
++        guint mid = last + (dr / 2) * 3 + dc / 2;
++
++        pattern_append (self, mid);
++      }
++    }
++    pattern_append (self, dot);
++    gtk_widget_queue_draw (priv->pattern);
++    return;
++  }
++}
++
++
++static gboolean
++pattern_draw_cb (GtkWidget *widget, cairo_t *cr, PhoshLockscreen *self)
++{
++  PhoshLockscreenPrivate *priv = phosh_lockscreen_get_instance_private (self);
++  double x0, y0, cell, cx, cy;
++
++  pattern_geometry (widget, &x0, &y0, &cell);
++  /* the line: blue while drawing, red after a wrong pattern */
++  if (priv->pattern_len > 0) {
++    if (priv->pattern_error)
++      cairo_set_source_rgba (cr, 0.88, 0.11, 0.14, 0.9);
++    else
++      cairo_set_source_rgba (cr, 0.21, 0.52, 0.89, 0.9);
++    cairo_set_line_width (cr, cell * 0.06);
++    cairo_set_line_cap (cr, CAIRO_LINE_CAP_ROUND);
++    cairo_set_line_join (cr, CAIRO_LINE_JOIN_ROUND);
++    for (guint i = 0; i < priv->pattern_len; i++) {
++      pattern_dot_center (widget, priv->pattern_seq[i] - '1', &cx, &cy);
++      if (i == 0)
++        cairo_move_to (cr, cx, cy);
++      else
++        cairo_line_to (cr, cx, cy);
++    }
++    if (priv->pattern_active)
++      cairo_line_to (cr, priv->pattern_x, priv->pattern_y);
++    cairo_stroke (cr);
++  }
++  /* the dots: bigger once in the pattern */
++  for (guint dot = 0; dot < 9; dot++) {
++    gboolean on = pattern_has (self, dot);
++
++    pattern_dot_center (widget, dot, &cx, &cy);
++    if (on && priv->pattern_error)
++      cairo_set_source_rgba (cr, 0.88, 0.11, 0.14, 1.0);
++    else if (on)
++      cairo_set_source_rgba (cr, 0.21, 0.52, 0.89, 1.0);
++    else
++      cairo_set_source_rgba (cr, 1.0, 1.0, 1.0, 0.85);
++    cairo_arc (cr, cx, cy, cell * (on ? 0.09 : 0.06), 0, 2 * G_PI);
++    cairo_fill (cr);
++  }
++  return FALSE;
++}
++
++
++static void
++pattern_reset (PhoshLockscreen *self)
++{
++  PhoshLockscreenPrivate *priv = phosh_lockscreen_get_instance_private (self);
++
++  g_clear_handle_id (&priv->pattern_clear_id, g_source_remove);
++  priv->pattern_len = 0;
++  priv->pattern_seq[0] = '\0';
++  priv->pattern_active = FALSE;
++  priv->pattern_error = FALSE;
++  if (priv->pattern)
++    gtk_widget_queue_draw (priv->pattern);
++}
++
++
++static gboolean
++pattern_clear_cb (gpointer data)
++{
++  PhoshLockscreen *self = PHOSH_LOCKSCREEN (data);
++  PhoshLockscreenPrivate *priv = phosh_lockscreen_get_instance_private (self);
++
++  priv->pattern_clear_id = 0;
++  pattern_reset (self);
++  phosh_lockscreen_set_unlock_status (self, _("Draw your pattern"));
++  return G_SOURCE_REMOVE;
++}
++
++
++/* a wrong or too short pattern stays red for a moment, then clears */
++static void
++pattern_fail (PhoshLockscreen *self, const char *status)
++{
++  PhoshLockscreenPrivate *priv = phosh_lockscreen_get_instance_private (self);
++
++  priv->pattern_error = TRUE;
++  priv->pattern_active = FALSE;
++  gtk_widget_queue_draw (priv->pattern);
++  phosh_lockscreen_set_unlock_status (self, status);
++  g_clear_handle_id (&priv->pattern_clear_id, g_source_remove);
++  priv->pattern_clear_id = g_timeout_add (1000, pattern_clear_cb, self);
++}
++
++
++static void
++pattern_drag_begin_cb (PhoshLockscreen *self, double x, double y, GtkGestureDrag *drag)
++{
++  PhoshLockscreenPrivate *priv = phosh_lockscreen_get_instance_private (self);
++
++  pattern_reset (self);
++  priv->pattern_active = TRUE;
++  priv->pattern_x = x;
++  priv->pattern_y = y;
++  priv->last_input = g_get_monotonic_time ();
++  pattern_hit (self, x, y);
++  gtk_gesture_set_state (GTK_GESTURE (drag), GTK_EVENT_SEQUENCE_CLAIMED);
++}
++
++
++static void
++pattern_drag_update_cb (PhoshLockscreen *self, double dx, double dy, GtkGestureDrag *drag)
++{
++  PhoshLockscreenPrivate *priv = phosh_lockscreen_get_instance_private (self);
++  double sx, sy;
++
++  if (!priv->pattern_active)
++    return;
++  gtk_gesture_drag_get_start_point (drag, &sx, &sy);
++  priv->pattern_x = sx + dx;
++  priv->pattern_y = sy + dy;
++  priv->last_input = g_get_monotonic_time ();
++  pattern_hit (self, priv->pattern_x, priv->pattern_y);
++  gtk_widget_queue_draw (priv->pattern);
++}
++
++
++static void
++pattern_drag_end_cb (PhoshLockscreen *self, double dx, double dy, GtkGestureDrag *drag)
++{
++  PhoshLockscreenPrivate *priv = phosh_lockscreen_get_instance_private (self);
++
++  if (!priv->pattern_active)
++    return;
++  priv->pattern_active = FALSE;
++  gtk_widget_queue_draw (priv->pattern);
++  if (priv->pattern_len == 0)
++    return;
++  if (priv->pattern_len < 4) {
++    pattern_fail (self, _("Connect at least 4 dots"));
++    return;
++  }
++  /* the dots in order are the password */
++  gtk_entry_set_text (GTK_ENTRY (priv->entry_pin), priv->pattern_seq);
++  on_unlock_submit (self);
++}
++
++
++static void
++apply_lock_type (PhoshLockscreen *self)
++{
++  PhoshLockscreenPrivate *priv = phosh_lockscreen_get_instance_private (self);
++  gboolean pattern = pattern_mode (self);
++  GtkWidget *buttons = gtk_widget_get_parent (priv->btn_submit);
++
++  gtk_widget_set_visible (priv->pattern, pattern);
++  gtk_widget_set_visible (priv->entry_pin, !pattern);
++  gtk_widget_set_visible (priv->keypad_revealer, !pattern);
++  if (buttons && buttons != priv->box_unlock)
++    gtk_widget_set_visible (buttons, !pattern);
++  pattern_reset (self);
++  phosh_lockscreen_set_unlock_status (self, pattern ? _("Draw your pattern") : _("Enter Passcode"));
++}
++
++
++static void
++setup_pattern_lock (PhoshLockscreen *self)
++{
++  PhoshLockscreenPrivate *priv = phosh_lockscreen_get_instance_private (self);
++  GSettingsSchemaSource *source = g_settings_schema_source_get_default ();
++  g_autoptr (GSettingsSchema) schema = NULL;
++
++  priv->pattern = gtk_drawing_area_new ();
++  gtk_widget_set_size_request (priv->pattern, 280, 280);
++  gtk_widget_set_halign (priv->pattern, GTK_ALIGN_CENTER);
++  gtk_widget_set_vexpand (priv->pattern, TRUE);
++  gtk_widget_add_events (priv->pattern, GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK |
++                         GDK_POINTER_MOTION_MASK | GDK_TOUCH_MASK);
++  g_signal_connect (priv->pattern, "draw", G_CALLBACK (pattern_draw_cb), self);
++  gtk_box_pack_start (GTK_BOX (priv->box_unlock), priv->pattern, TRUE, TRUE, 0);
++  gtk_box_reorder_child (GTK_BOX (priv->box_unlock), priv->pattern, 2);
++
++  priv->pattern_drag = gtk_gesture_drag_new (priv->pattern);
++  gtk_event_controller_set_propagation_phase (GTK_EVENT_CONTROLLER (priv->pattern_drag), GTK_PHASE_BUBBLE);
++  g_signal_connect_swapped (priv->pattern_drag, "drag-begin", G_CALLBACK (pattern_drag_begin_cb), self);
++  g_signal_connect_swapped (priv->pattern_drag, "drag-update", G_CALLBACK (pattern_drag_update_cb), self);
++  g_signal_connect_swapped (priv->pattern_drag, "drag-end", G_CALLBACK (pattern_drag_end_cb), self);
++
++  if (source)
++    schema = g_settings_schema_source_lookup (source, "de.yesman.neo", TRUE);
++  if (schema && g_settings_schema_has_key (schema, "lock-type")) {
++    priv->neo_settings = g_settings_new ("de.yesman.neo");
++    g_signal_connect_swapped (priv->neo_settings, "changed::lock-type", G_CALLBACK (apply_lock_type), self);
++  }
++  apply_lock_type (self);
++}
++
++/* ------------------------------------------------------------------------------------------------------------- */
++
++
+ static void
+ on_auth_authenticate_ready (GObject *source_object, GAsyncResult *result, gpointer user_data)
+ {
+@@ -391,6 +693,10 @@
+ 
+   if (authenticated) {
+     g_signal_emit (self, signals[LOCKSCREEN_UNLOCK], 0);
++  } else if (pattern_mode (self)) {
++    pattern_fail (self, _("Wrong pattern"));
++    clear_input (self, TRUE);
++    gtk_widget_set_sensitive (GTK_WIDGET (self), TRUE);
+   } else {
+     /* give visual feedback on error */
+     phosh_lockscreen_set_unlock_status (self, _("Enter Passcode"));
+@@ -949,6 +1255,8 @@
+   if (plugins)
+     phosh_widget_box_set_plugins (PHOSH_WIDGET_BOX (priv->widget_box), plugins);
+ 
++  setup_pattern_lock (self);
++
+   on_deck_visible_child_changed (self, NULL, priv->deck);
+   on_info_reveal_child_changed (self);
+ 
+@@ -986,6 +1294,9 @@
+   g_clear_object (&priv->calls_manager);
+   g_clear_pointer (&priv->active, g_free);
+   g_clear_object (&priv->lockscreen_settings);
++  g_clear_handle_id (&priv->pattern_clear_id, g_source_remove);
++  g_clear_object (&priv->pattern_drag);
++  g_clear_object (&priv->neo_settings);
+ 
+   g_clear_pointer (&priv->background, phosh_cp_widget_destroy);
+ 
