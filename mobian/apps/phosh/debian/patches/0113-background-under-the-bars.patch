@@ -1,0 +1,31 @@
+Index: phosh-0.58.0/src/background.c
+===================================================================
+--- phosh-0.58.0.orig/src/background.c
++++ phosh-0.58.0/src/background.c
+@@ -209,9 +209,6 @@ phosh_background_draw (GtkWidget *widget
+   if (!self->configured)
+     return GDK_EVENT_PROPAGATE;
+ 
+-  if (self->primary)
+-    phosh_shell_get_usable_area (phosh_shell_get_default (), &x, &y, NULL, NULL);
+-
+   cairo_save (cr);
+   if (self->primary) {
+     /* Primary background: use CSS color as it's the top- and home-bar's background */
+@@ -249,12 +246,10 @@ update_image (PhoshBackground *self)
+   if (!self->configured)
+     return;
+ 
+-  if (self->primary) {
+-    phosh_shell_get_usable_area (phosh_shell_get_default (), NULL, NULL, &width, &height);
+-  } else {
+-    width = phosh_layer_surface_get_configured_width (PHOSH_LAYER_SURFACE (self));
+-    height = phosh_layer_surface_get_configured_height (PHOSH_LAYER_SURFACE (self));
+-  }
++  /* Neo: the picture fills the whole screen, under the top and home bars too, as on the lock screen; a clear
++   * bar (over Neo's home screen or Phosh's app grid) shows it instead of a black strip */
++  width = phosh_layer_surface_get_configured_width (PHOSH_LAYER_SURFACE (self));
++  height = phosh_layer_surface_get_configured_height (PHOSH_LAYER_SURFACE (self));
+ 
+   g_return_if_fail (width > 0 && height > 0);
+ 

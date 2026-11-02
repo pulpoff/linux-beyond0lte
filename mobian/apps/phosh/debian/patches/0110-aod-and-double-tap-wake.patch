@@ -1,0 +1,472 @@
+From: pulpoff <pashkovsky@gmail.com>
+Subject: Always On Display and double tap to wake (de.yesman.neo aod, double-tap-wake)
+
+With aod on, blanking the built-in panel only marks it off: the shell's blanked state, the screen
+saver and the power button behave as with a blank panel, while the shell puts a black overlay on
+it with the time, the date, the battery and one icon per app with notifications, dim grey, moving
+a little every minute against burn-in. With double-tap-wake on, every touchscreen that has a
+wake_gesture attribute (s6sy761) goes into its low power gesture mode while blanked; its double
+tap comes as KEY_WAKEUP and wakes the screen like any key.
+---
+diff -ruN a/src/aod.c b/src/aod.c
+--- a/src/aod.c	1970-01-01 01:00:00.000000000 +0100
++++ b/src/aod.c	2026-10-31 11:59:11.370595253 +0100
+@@ -0,0 +1,258 @@
++/*
++ * Copyright (C) 2026 pulpoff
++ *
++ * SPDX-License-Identifier: GPL-3.0-or-later
++ */
++
++#define G_LOG_DOMAIN "phosh-aod"
++
++#include "phosh-config.h"
++#include "aod.h"
++#include "battery-info.h"
++#include "layersurface-priv.h"
++#include "notifications/notify-manager.h"
++#include "notifications/notification-source.h"
++#include "shell-priv.h"
++#include "wall-clock.h"
++
++/**
++ * PhoshAod:
++ *
++ * Neo: the always-on display. While the built-in panel is "blanked" with `de.yesman.neo aod` on, the
++ * panel stays lit and this black overlay shows the time, the date, the battery and one icon per app
++ * with notifications. Black pixels cost nothing on OLED; the text is dim grey. The content moves a
++ * little every minute so no pixel stays lit for long.
++ */
++
++#define AOD_SHIFT 24 /* px the content wanders, against burn-in */
++
++struct _PhoshAod {
++  PhoshLayerSurface  parent;
++  PhoshMonitor      *monitor;
++
++  GtkWidget         *box;
++  GtkWidget         *time;
++  GtkWidget         *date;
++  GtkWidget         *icons;
++  GListModel        *sources;
++  guint              step;
++};
++
++G_DEFINE_TYPE (PhoshAod, phosh_aod, PHOSH_TYPE_LAYER_SURFACE)
++
++enum {
++  PROP_0,
++  PROP_MONITOR,
++  PROP_LAST_PROP,
++};
++static GParamSpec *props[PROP_LAST_PROP];
++
++static const char aod_css[] =
++  ".phosh-aod { background: black; }"
++  ".phosh-aod label { color: #8a8a8a; }"
++  ".phosh-aod .aod-time { font-size: 64px; font-weight: 300; }"
++  ".phosh-aod .aod-date { font-size: 17px; }"
++  ".phosh-aod image { color: #8a8a8a; -gtk-icon-effect: dim; }";
++
++
++static void
++update_clock (PhoshAod *self)
++{
++  PhoshWallClock *clock = phosh_wall_clock_get_default ();
++  g_autofree char *date = phosh_wall_clock_local_date (clock);
++  int dx, dy;
++
++  gtk_label_set_label (GTK_LABEL (self->time), phosh_wall_clock_get_clock (clock, TRUE));
++  gtk_label_set_label (GTK_LABEL (self->date), date);
++
++  /* a slow walk around a small square, one step a minute */
++  self->step = (self->step + 1) % 16;
++  dx = ((int) (self->step % 4) - 2) * AOD_SHIFT / 2;
++  dy = ((int) (self->step / 4) - 2) * AOD_SHIFT / 2;
++  gtk_widget_set_margin_start (self->box, AOD_SHIFT + dx);
++  gtk_widget_set_margin_end (self->box, AOD_SHIFT - dx);
++  gtk_widget_set_margin_top (self->box, AOD_SHIFT + dy);
++  gtk_widget_set_margin_bottom (self->box, AOD_SHIFT - dy);
++}
++
++
++static void
++update_icons (PhoshAod *self)
++{
++  g_autoptr (GHashTable) seen = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
++  guint n;
++
++  gtk_container_foreach (GTK_CONTAINER (self->icons), (GtkCallback) gtk_widget_destroy, NULL);
++
++  n = g_list_model_get_n_items (self->sources);
++  for (guint i = 0; i < n && g_hash_table_size (seen) < 6; i++) {
++    g_autoptr (PhoshNotificationSource) source = g_list_model_get_item (self->sources, i);
++    g_autoptr (PhoshNotification) notification = NULL;
++    g_autofree char *key = NULL;
++    GIcon *icon;
++
++    if (!g_list_model_get_n_items (G_LIST_MODEL (source)))
++      continue;
++    notification = g_list_model_get_item (G_LIST_MODEL (source), 0);
++    icon = phosh_notification_get_app_icon (notification);
++    if (!icon)
++      continue;
++    key = g_icon_to_string (icon);
++    if (!key || g_hash_table_contains (seen, key))
++      continue;
++    g_hash_table_add (seen, g_steal_pointer (&key));
++    gtk_container_add (GTK_CONTAINER (self->icons), gtk_image_new_from_gicon (icon, GTK_ICON_SIZE_LARGE_TOOLBAR));
++  }
++  gtk_widget_show_all (self->icons);
++}
++
++
++static void
++phosh_aod_set_property (GObject *obj, guint prop_id, const GValue *value, GParamSpec *pspec)
++{
++  PhoshAod *self = PHOSH_AOD (obj);
++
++  switch (prop_id) {
++  case PROP_MONITOR:
++    g_set_object (&self->monitor, g_value_get_object (value));
++    break;
++  default:
++    G_OBJECT_WARN_INVALID_PROPERTY_ID (obj, prop_id, pspec);
++    break;
++  }
++}
++
++
++static void
++phosh_aod_get_property (GObject *obj, guint prop_id, GValue *value, GParamSpec *pspec)
++{
++  PhoshAod *self = PHOSH_AOD (obj);
++
++  switch (prop_id) {
++  case PROP_MONITOR:
++    g_value_set_object (value, self->monitor);
++    break;
++  default:
++    G_OBJECT_WARN_INVALID_PROPERTY_ID (obj, prop_id, pspec);
++    break;
++  }
++}
++
++
++static void
++phosh_aod_constructed (GObject *object)
++{
++  PhoshAod *self = PHOSH_AOD (object);
++  PhoshWayland *wl = phosh_wayland_get_default ();
++  PhoshNotifyManager *nm = phosh_notify_manager_get_default ();
++  g_autoptr (GtkCssProvider) css = gtk_css_provider_new ();
++  GtkWidget *battery, *bottom;
++
++  if (self->monitor == NULL)
++    self->monitor = g_object_ref (phosh_shell_get_builtin_monitor (phosh_shell_get_default ()));
++
++  g_object_set (PHOSH_LAYER_SURFACE (self),
++                "layer-shell", phosh_wayland_get_zwlr_layer_shell_v1 (wl),
++                "wl-output", phosh_monitor_get_wl_output (self->monitor),
++                "anchor", ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP |
++                ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM |
++                ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT |
++                ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT,
++                "layer", ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY,
++                "kbd-interactivity", FALSE,
++                "exclusive-zone", -1,
++                "namespace", "phosh aod",
++                NULL);
++
++  G_OBJECT_CLASS (phosh_aod_parent_class)->constructed (object);
++
++  gtk_css_provider_load_from_data (css, aod_css, -1, NULL);
++  gtk_style_context_add_provider_for_screen (gdk_screen_get_default (), GTK_STYLE_PROVIDER (css),
++                                             GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 10);
++  gtk_style_context_add_class (gtk_widget_get_style_context (GTK_WIDGET (self)), "phosh-aod");
++
++  /* the clock sits a third down, as on Samsung's AOD; battery and app icons under it */
++  self->box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 6);
++  gtk_widget_set_halign (self->box, GTK_ALIGN_CENTER);
++  gtk_widget_set_valign (self->box, GTK_ALIGN_START);
++  self->time = gtk_label_new (NULL);
++  gtk_style_context_add_class (gtk_widget_get_style_context (self->time), "aod-time");
++  self->date = gtk_label_new (NULL);
++  gtk_style_context_add_class (gtk_widget_get_style_context (self->date), "aod-date");
++  bottom = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 12);
++  gtk_widget_set_halign (bottom, GTK_ALIGN_CENTER);
++  gtk_widget_set_margin_top (bottom, 18);
++  battery = phosh_battery_info_new ();
++  phosh_battery_info_set_show_detail (PHOSH_BATTERY_INFO (battery), TRUE);
++  self->icons = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 10);
++  gtk_container_add (GTK_CONTAINER (bottom), battery);
++  gtk_container_add (GTK_CONTAINER (bottom), self->icons);
++  gtk_container_add (GTK_CONTAINER (self->box), self->time);
++  gtk_container_add (GTK_CONTAINER (self->box), self->date);
++  gtk_container_add (GTK_CONTAINER (self->box), bottom);
++
++  {
++    GtkWidget *align = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
++    GtkWidget *spacer = gtk_box_new (GTK_ORIENTATION_VERTICAL, 0);
++
++    gtk_widget_set_vexpand (spacer, FALSE);
++    gtk_widget_set_size_request (spacer, -1, 520);
++    gtk_container_add (GTK_CONTAINER (align), spacer);
++    gtk_container_add (GTK_CONTAINER (align), self->box);
++    gtk_container_add (GTK_CONTAINER (self), align);
++  }
++
++  g_signal_connect_object (phosh_wall_clock_get_default (), "notify::clock",
++                           G_CALLBACK (update_clock), self, G_CONNECT_SWAPPED);
++  self->sources = G_LIST_MODEL (g_object_ref (phosh_notify_manager_get_list (nm)));
++  g_signal_connect_object (self->sources, "items-changed",
++                           G_CALLBACK (update_icons), self, G_CONNECT_SWAPPED);
++
++  update_clock (self);
++  update_icons (self);
++  gtk_widget_show_all (GTK_WIDGET (self));
++}
++
++
++static void
++phosh_aod_dispose (GObject *object)
++{
++  PhoshAod *self = PHOSH_AOD (object);
++
++  g_clear_object (&self->sources);
++  g_clear_object (&self->monitor);
++
++  G_OBJECT_CLASS (phosh_aod_parent_class)->dispose (object);
++}
++
++
++static void
++phosh_aod_class_init (PhoshAodClass *klass)
++{
++  GObjectClass *object_class = G_OBJECT_CLASS (klass);
++
++  object_class->get_property = phosh_aod_get_property;
++  object_class->set_property = phosh_aod_set_property;
++  object_class->constructed = phosh_aod_constructed;
++  object_class->dispose = phosh_aod_dispose;
++
++  props[PROP_MONITOR] =
++    g_param_spec_object ("monitor", "", "",
++                         PHOSH_TYPE_MONITOR,
++                         G_PARAM_CONSTRUCT_ONLY | G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS);
++
++  g_object_class_install_properties (object_class, PROP_LAST_PROP, props);
++}
++
++
++static void
++phosh_aod_init (PhoshAod *self)
++{
++}
++
++
++PhoshAod *
++phosh_aod_new (PhoshMonitor *monitor)
++{
++  return g_object_new (PHOSH_TYPE_AOD, "monitor", monitor, NULL);
++}
+diff -ruN a/src/aod.h b/src/aod.h
+--- a/src/aod.h	1970-01-01 01:00:00.000000000 +0100
++++ b/src/aod.h	2026-10-31 11:59:11.370624847 +0100
+@@ -0,0 +1,20 @@
++/*
++ * Copyright (C) 2026 pulpoff
++ *
++ * SPDX-License-Identifier: GPL-3.0-or-later
++ */
++#pragma once
++
++#include "monitor/monitor.h"
++
++#include <layersurface.h>
++
++G_BEGIN_DECLS
++
++#define PHOSH_TYPE_AOD (phosh_aod_get_type())
++
++G_DECLARE_FINAL_TYPE (PhoshAod, phosh_aod, PHOSH, AOD, PhoshLayerSurface)
++
++PhoshAod        *phosh_aod_new                                  (PhoshMonitor *monitor);
++
++G_END_DECLS
+diff -ruN a/src/meson.build b/src/meson.build
+--- a/src/meson.build	2026-10-31 11:58:39.369587446 +0100
++++ b/src/meson.build	2026-10-31 11:59:11.330939232 +0100
+@@ -328,6 +328,7 @@
+   'cell-broadcast-prompt.h',
+   'contrib/shell-network-agent.h',
+   'emergency-calls-manager.h',
++  'aod.h',
+   'fader.h',
+   'thumbnail-overlay.h',
+   'fake-clock.h',
+@@ -399,6 +400,7 @@
+   'bt-status-page.c',
+   'contrib/shell-network-agent.c',
+   'emergency-calls-manager.c',
++  'aod.c',
+   'fader.c',
+   'thumbnail-overlay.c',
+   'fake-clock.c',
+diff -ruN a/src/monitor/monitor.c b/src/monitor/monitor.c
+--- a/src/monitor/monitor.c	2026-10-31 11:58:39.135586286 +0100
++++ b/src/monitor/monitor.c	2026-10-31 11:59:11.331360966 +0100
+@@ -233,6 +233,26 @@
+ };
+ 
+ 
++/* Neo: de.yesman.neo aod, when the launcher's schema is installed */
++static gboolean
++neo_aod_enabled (void)
++{
++  static GSettings *settings;
++  static gboolean looked;
++
++  if (!looked) {
++    g_autoptr (GSettingsSchema) schema = NULL;
++
++    looked = TRUE;
++    schema = g_settings_schema_source_lookup (g_settings_schema_source_get_default (), "de.yesman.neo", TRUE);
++    if (schema && g_settings_schema_has_key (schema, "aod"))
++      settings = g_settings_new ("de.yesman.neo");
++  }
++
++  return settings && g_settings_get_boolean (settings, "aod");
++}
++
++
+ static void
+ wlr_output_power_handle_mode(void *data,
+                              struct zwlr_output_power_v1 *output_power,
+@@ -627,6 +647,22 @@
+   g_return_if_fail (phosh_monitor_is_configured (self));
+   g_return_if_fail (self->wlr_output_power);
+ 
++  /* Neo: with the always-on display the built-in panel is only marked off. Everything that follows the
++   * power mode (the shell's blanked state, the screen saver, the power button) works as with a blank
++   * panel; the shell puts the AOD overlay on it. */
++  if (mode == PHOSH_MONITOR_POWER_SAVE_MODE_OFF && phosh_monitor_is_builtin (self) && neo_aod_enabled ()) {
++    self->aod = TRUE;
++    self->power_mode = PHOSH_MONITOR_POWER_SAVE_MODE_OFF;
++    g_object_notify_by_pspec (G_OBJECT (self), props[PHOSH_MONITOR_PROP_POWER_MODE]);
++    return;
++  }
++  if (mode == PHOSH_MONITOR_POWER_SAVE_MODE_ON && self->aod) {
++    self->aod = FALSE;
++    self->power_mode = PHOSH_MONITOR_POWER_SAVE_MODE_ON;
++    g_object_notify_by_pspec (G_OBJECT (self), props[PHOSH_MONITOR_PROP_POWER_MODE]);
++    return;
++  }
++
+   switch (mode) {
+   case PHOSH_MONITOR_POWER_SAVE_MODE_OFF:
+     wl_mode = ZWLR_OUTPUT_POWER_V1_MODE_OFF;
+diff -ruN a/src/monitor/monitor.h b/src/monitor/monitor.h
+--- a/src/monitor/monitor.h	2026-10-31 11:58:39.245586831 +0100
++++ b/src/monitor/monitor.h	2026-10-31 11:59:11.331108505 +0100
+@@ -115,6 +115,7 @@
+   struct zxdg_output_v1 *xdg_output;
+   struct zwlr_output_power_v1 *wlr_output_power;
+   PhoshMonitorPowerSaveMode power_mode;
++  gboolean aod; /* Neo: "off" while the panel stays lit for the always-on display */
+ 
+   int x, y, width, height;
+   int subpixel;
+diff -ruN a/src/shell.c b/src/shell.c
+--- a/src/shell.c	2026-10-31 11:58:39.024585735 +0100
++++ b/src/shell.c	2026-10-31 11:59:11.336747497 +0100
+@@ -43,6 +43,7 @@
+ #include "docked-info.h"
+ #include "docked-manager.h"
+ #include "emergency-calls-manager.h"
++#include "aod.h"
+ #include "fader.h"
+ #include "feedbackinfo.h"
+ #include "feedback-manager.h"
+@@ -148,6 +149,8 @@
+   PhoshDragSurface           *home;
+   gboolean                    overview_visible;
+   GPtrArray                  *faders; /* for final fade out */
++  PhoshAod                   *aod;    /* Neo: the always-on display while blanked */
++  GSettings                  *neo_settings;
+   GStrv log_domains;
+ 
+   PhoshOsdWindow             *osd;
+@@ -351,6 +354,55 @@
+ }
+ 
+ 
++/* Neo: touchscreens that wake on a double tap (s6sy761's wake_gesture) follow the blanked state */
++static void
++neo_set_wake_gesture (gboolean on)
++{
++  const char *base = "/sys/bus/i2c/devices";
++  g_autoptr (GDir) dir = g_dir_open (base, 0, NULL);
++  const char *name;
++
++  while (dir && (name = g_dir_read_name (dir))) {
++    g_autofree char *path = g_build_filename (base, name, "wake_gesture", NULL);
++    g_autoptr (GError) err = NULL;
++
++    if (!g_file_test (path, G_FILE_TEST_EXISTS))
++      continue;
++    if (!g_file_set_contents_full (path, on ? "1" : "0", 1, G_FILE_SET_CONTENTS_NONE, 0666, &err))
++      g_warning ("Failed to set %s: %s", path, err->message);
++  }
++}
++
++
++static void
++neo_blanked_changed (PhoshShell *self, PhoshMonitor *monitor, gboolean blanked)
++{
++  PhoshShellPrivate *priv = phosh_shell_get_instance_private (self);
++  gboolean dt2w = FALSE;
++
++  if (blanked && monitor->aod) {
++    if (!priv->aod) {
++      priv->aod = phosh_aod_new (monitor);
++      gtk_widget_show (GTK_WIDGET (priv->aod));
++    }
++  } else {
++    g_clear_pointer (&priv->aod, phosh_cp_widget_destroy);
++  }
++
++  if (!priv->neo_settings) {
++    g_autoptr (GSettingsSchema) schema = NULL;
++
++    schema = g_settings_schema_source_lookup (g_settings_schema_source_get_default (), "de.yesman.neo", TRUE);
++    if (schema && g_settings_schema_has_key (schema, "double-tap-wake"))
++      priv->neo_settings = g_settings_new ("de.yesman.neo");
++  }
++  if (priv->neo_settings)
++    dt2w = g_settings_get_boolean (priv->neo_settings, "double-tap-wake");
++
++  neo_set_wake_gesture (blanked && dt2w);
++}
++
++
+ static void
+ on_primary_monitor_power_mode_changed (PhoshShell *self, GParamSpec *pspec, PhoshMonitor *monitor)
+ {
+@@ -362,6 +414,7 @@
+   g_object_get (monitor, "power-mode", &mode, NULL);
+ 
+   phosh_shell_set_state (self, PHOSH_STATE_BLANKED, mode == PHOSH_MONITOR_POWER_SAVE_MODE_OFF);
++  neo_blanked_changed (self, monitor, mode == PHOSH_MONITOR_POWER_SAVE_MODE_OFF);
+ }
+ 
+ 
+@@ -460,6 +513,8 @@
+ {
+   PhoshShellPrivate *priv = phosh_shell_get_instance_private (self);
+ 
++  g_clear_pointer (&priv->aod, phosh_cp_widget_destroy);
++  g_clear_object (&priv->neo_settings);
+   g_clear_pointer (&priv->top_panel, phosh_cp_widget_destroy);
+   g_clear_pointer (&priv->home, phosh_cp_widget_destroy);
+ }

@@ -14,25 +14,27 @@ What works
 
 | Part | State |
 | --- | --- |
-| Display | 1080x2280 AMOLED (S6E3FA7) on DECON, taken over from the bootloader; brightness through `s10e_panel_bl`; calibrated "Natural" colour (the panel's mDNIe, set by the panel driver) |
+| Display | 1080x2280 AMOLED (S6E3FA7) on DECON, taken over from the bootloader; brightness through `s10e_panel_bl`; calibrated "Natural" colour (the panel's mDNIe, set by the panel driver); panel self-refresh, so an idle screen sends no frames; an Always On Display clock in Phosh |
 | GPU | Mali-G76 MP12 with panfrost, OpenGL ES 3.1, DVFS 156–702 MHz (simple_ondemand) |
-| Touchscreen | S6SY761 |
+| Touchscreen | S6SY761, double tap to wake |
 | Wi-Fi | BCM4375 B1 on PCIe, 2.4 and 5 GHz (new Exynos 9820 PCIe driver, brcmfmac support for the 4375) |
 | Bluetooth | BCM4375 B1 on UART, Bluetooth LE included |
-| Sound | speaker and microphones through the CS47L93 codec and CS35L41 amps; media playback drives ABOX without its DSP firmware, calls use it |
+| Sound | speaker and microphones through the CS47L93 codec and CS35L41 amps; media playback drives ABOX without its DSP firmware, calls use it; a call's downlink and uplink as PCMs of their own, for a GSM gateway |
 | Modem | Shannon CP boots from the phone's own `radio` partition; voice calls with audio, SMS, LTE data (`rmnet0`, ~47/34 Mbit/s), APN from the SIM |
 | Sensors | accelerometer (screen rotation), ambient light, proximity and compass through the BCM4775 sensor hub |
 | Cameras | rear wide S5K2L4 with AK7375 autofocus, rear ultra-wide S5K3P9, front S5K3J1, through a new CSIS/write-DMA driver and libcamera's software ISP (tuning in `mobian/camera/`) |
 | Video | MFC hardware decode: H.264, HEVC, VP9 |
 | DisplayPort | USB-C DP alt mode to HDMI docks: 1080p60/120 with audio, a second CRTC on DECON2, HDMI CEC through docks that tunnel it |
 | USB | device mode (networking), host mode with hubs, USB 3 SuperSpeed through docks, Type-C orientation from the MAX77705 |
-| Battery | MAX77705 charger and fuel gauge; Qi wireless charging at 5 V through the charger's WCIN input |
+| Battery | MAX77705 charger and fuel gauge; Qi wireless charging at 5 V through the charger's WCIN input; on a 0.5 A USB port it shows as charging, as Android does |
+| Suspend | suspend to idle (s2idle) enters and wakes on the RTC alarm, Wi-Fi included (D3 and back). The power key, the PMIC, the charger and the modem are armed as wakeups; calls and SMS waking the phone are being tested |
 | RTC | S2MPS19 real-time clock |
 | Buttons | power, volume, haptics |
 
 Not done: GPS, the fingerprint sensor (locked by the secure world), NFC, VoLTE, IPv6 on mobile data, the
-front camera's tuning, suspend (s2idle resets the SoC, so it is masked), CPU idle states, MFC encode, the flash
-LED, fast (10 V) wireless charging and Wireless PowerShare.
+front camera's tuning, automatic suspend (s2idle works when asked, but nothing triggers it yet, the display
+stays lit with its last frame while asleep, and Wi-Fi cannot wake the phone), CPU idle states, MFC encode, the
+flash LED, fast (10 V) wireless charging and Wireless PowerShare.
 
 Installing it
 =============
@@ -68,18 +70,33 @@ On top of chiffathefox's Exynos 9820 tree (clocks, pinctrl, UFS, ACPM, the PMIC,
 * **Display:** `drivers/gpu/drm/tiny/exynos9820-decon-kms.c` keeps the bootloader's DECON/DSIM setup and
   turns it into a real KMS device; `panel-samsung-s6e3fa7-beyond0.c`, which also loads the panel's mDNIe
   colour tables (Samsung's "Natural" mode: the bootloader leaves a violet-tinted one); simpledrm reports a DSI connector
-  so Phosh treats the panel as built-in.
+  so Phosh treats the panel as built-in. Panel self-refresh (`exynos9820-decon-kms.psr`, on by default): the TE
+  trigger starts a frame only when the picture has changed, so a still screen or the AOD clock costs no frames
+  between updates.
+* **Touchscreen:** `s6sy761.c` gets the controller's low power mode with its double tap gesture (`wake_gesture`
+  in sysfs). Userspace turns it on when it blanks the screen; the double tap comes from a second input device as
+  `KEY_WAKEUP`.
 * **GPU:** panfrost on the G76 (the G3D power domain stays on: re-powering it needs a secure-world
   restore that mainline does not do).
 * **Wi-Fi:** `drivers/pci/controller/dwc/pcie-exynos9820.c` (root complex and PHY), and brcmfmac support
   for the BCM4375 B1, including the shared `host_cap` the v7 PCIe protocol needs before the firmware
-  consumes receive buffers.
+  consumes receive buffers. The 4375's firmware takes mailbox data (D3 inform, D0 inform) as control ring
+  messages, as Broadcom's dhd sends it, not through the TCM mailbox, so suspend gets its D3 acknowledgement.
+  Its deep sleep requests are left unanswered: brcmfmac has no device-wake handshake to wake it again.
 * **Bluetooth:** CMU_PERIC1 clocks for UART_BT, the USI wrapper, hci_bcm power sequencing.
 * **Sound:** `sound/soc/samsung/exynos9820-abox.c` drives ABOX's DMA and routing directly for media,
   and loads its DSP firmware (calliope) for the voice path of calls; `s10e_madera.c` machine driver; CS35L41 changes for the S10e amps.
+  For a GSM gateway, two more PCMs work during a call: "Call Downlink" (`hw:0,2`, capture: the far end's voice
+  as the CP sends it, before anything is mixed in) and "Call Uplink" (`hw:0,3`, playback: with the "Call Uplink
+  Switch" control on it goes to the CP in place of the microphones).
 * **Modem:** `drivers/misc/exynos9820-cp.c`, the boot and shared-memory link to the Shannon CP. The radio
   stack runs in userspace (`exynos-cpd`, `mobian/modem/`): ModemManager talks AT over a WWAN AT bridge,
-  and `exynos-cpd` translates that to Samsung IPC.
+  and `exynos-cpd` translates that to Samsung IPC. The CP's mailbox interrupt is a wakeup source: every
+  message from the CP keeps the phone awake for `wake_ms` (1 s), the CP's own wakelock bit holds it awake as
+  long as it is set, and `exynos-cpd` holds a kernel wakelock while a call rings or is up and for 10 s after an
+  SMS, as rild and Android's in-call screen do.
+* **Suspend:** suspend to idle works. Pin-controller 7 (VTS) is left out of pinctrl-exynos: it sits in a power
+  domain that is off, and saving its banks in the late suspend phase stalled the SoC.
 * **Sensor hub:** `drivers/iio/common/bcm4775_shub/`. The BCM4775 boots from ROM and needs a RAM patch on
   every power-up; the driver loads it (`brcm/bcm4775-shub.patch`, from the phone's Android), speaks
   Broadcom's transport layer and Samsung's SSP protocol on top, and exposes the accelerometer, light and
@@ -101,8 +118,9 @@ On top of chiffathefox's Exynos 9820 tree (clocks, pinctrl, UFS, ACPM, the PMIC,
   xHCI frame counter ran almost 3x too fast and every hub failed to enumerate; the bit is cleared now.
 * **Power:** MAX77705 charger and MAX17042-family fuel gauge changes, including the WCIN input the IDT
   wireless receiver feeds (selected, limited to 820 mA after a ramp from 480 mA as stock does, reported
-  as online); S2MPS19 RTC and 32 kHz clock over
-  ACPM; Exynos 9820 PMU and power domains.
+  as online). A supplied battery that is not full reports Charging even while a 0.5 A port cannot keep up
+  with the screen (`max17042_battery.supplied_is_charging`), as Android shows "charging slowly". S2MPS19 RTC
+  and 32 kHz clock over ACPM; Exynos 9820 PMU and power domains.
 
 Firmware
 ========

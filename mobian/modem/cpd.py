@@ -30,6 +30,16 @@ MAX_FRAME = 2044            # one UL slot minus the SIPC5 header
 t0 = time.time()
 
 
+def wake_lock(name, ms):
+    """Keep the AP out of suspend for ms (CONFIG_PM_WAKELOCKS, what rild's wakelocks are on Android).
+    Only ever timed: if cpd dies holding one, it lapses by itself."""
+    try:
+        with open('/sys/power/wake_lock', 'w') as f:
+            f.write('%s %d' % (name, ms * 1000000))
+    except OSError as e:
+        log('wake_lock %s: %r' % (name, e))
+
+
 def log(*a):
     print('%8.3f' % (time.time() - t0), *a, flush=True)
 
@@ -177,6 +187,7 @@ class Ipc:
         # SMS_INCOMING_MSG: u8 type, u8 ?, u16 sim_index, u8 tpid, u8 len, pdu
         tpid, ln = data[4], data[5]
         pdu = data[6:6 + ln]
+        wake_lock('cpd-sms', 10000)     # ModemManager reads it after +CMTI, then the UI shows it
         # SMS_DELIVER_REPORT, as rild sends it: type 2, error 0, the tpid, 0
         self.send(0x04, 0x06, EXEC, bytes([2, 0, 0, tpid, 0]))
         d = os.path.join(state, 'sms')
@@ -305,6 +316,7 @@ class Atd:
         self.ring_until = 0
         self.sms_wait = 0               # deadline for the network's verdict on +CMGS
         self.next_ring = 0
+        self.call_lock_at = 0           # last refresh of the cpd-call wakelock
         self.apns = None                # attach APNs still to try for this SIM
         self.apn_at = 0                 # when to try the next one if still unregistered
         self.smsdir = os.path.join(state, 'sms')
@@ -399,7 +411,7 @@ class Atd:
         stays unregistered or limited (state 7) do we set one, per SIM, and
         walk the candidates 30 s apart. Data is a separate step after this."""
         st, now = self.st, time.time()
-        if any(st[k][0] in (1, 5) for k in ('cs', 'ps')):
+        if any(self.stat_at(st[k][0]) in (1, 5) for k in ('cs', 'ps')):     # registered
             self.apn_at = now + 30
             return
         if not st['imsi'] or self.calls:
@@ -472,6 +484,7 @@ class Atd:
         elif (g, i) == (0x04, 0x0a) and t == GET and d:
             st['smsc'] = d[:1 + d[0]]       # length-prefixed SCA, zero-padded to 12
         elif (g, i) == (0x02, 0x02):
+            self.hold_call()                         # before the AP can go back to sleep
             self.ipc.send(0x02, 0x06, GET)          # who is calling: CALL_LIST
             self.ring_until = time.time() + 60
             self.next_ring = 0
@@ -499,8 +512,15 @@ class Atd:
                 self.ring_until = 0
                 self.audio_off()
 
+    def hold_call(self):
+        # awake for as long as a call rings or is up, as Android's in-call screen keeps it
+        self.call_lock_at = time.time()
+        wake_lock('cpd-call', 3000)
+
     def tick(self):
         self.apn_tick()
+        if (self.calls or self.ring_until > time.time()) and time.time() - self.call_lock_at >= 1:
+            self.hold_call()
         if self.act_wait and time.time() > self.act_wait[2]:
             self.act_wait = None
             self.final(False, 148)
@@ -607,8 +627,11 @@ class Atd:
         elif name == '+CPIN':
             if test:
                 pass
-            elif st['sim'] in (0x00, 0x82, 0x83):
+            elif st['sim'] in (0x00, 0x82, 0x83) and st['imsi']:
                 info('+CPIN: READY')
+            elif st['sim'] in (0x00, 0x82, 0x83):
+                self.final(False, 14)       # SIM busy until the IMSI is read: ModemManager then waits,
+                return False                # and its SIM object (operator id) is this card's
             elif st['sim'] == 0x03:
                 info('+CPIN: SIM PIN')
             elif st['sim'] == 0x80:

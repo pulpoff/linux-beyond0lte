@@ -7,3 +7,8 @@
 0106-lockscreen-pattern-lock.patch
 0107-home-no-swipe-home-right-after-rotation.patch
 0109-settings-panels-open-neo-settings.patch
+0110-aod-and-double-tap-wake.patch
+0111-neo-home-transparent-top-bar.patch
+0112-aod-hides-the-status-bar.patch
+0113-background-under-the-bars.patch
+0114-power-key-goes-straight-to-aod.patch

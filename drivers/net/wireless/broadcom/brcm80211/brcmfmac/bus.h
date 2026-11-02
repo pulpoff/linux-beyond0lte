@@ -87,6 +87,7 @@ struct brcmf_bus_dcmd {
  * @get_memdump: obtain device memory dump in provided buffer.
  * @get_blob: obtain a firmware blob.
  * @remove: initiate unbind of the device.
+ * @mbdata: mailbox data the dongle sent in a control completion (optional).
  *
  * This structure provides an abstract interface towards the
  * bus specific driver. For control messages to common driver
@@ -108,6 +109,7 @@ struct brcmf_bus_ops {
 	void (*debugfs_create)(struct device *dev);
 	int (*reset)(struct device *dev);
 	void (*remove)(struct device *dev);
+	void (*mbdata)(struct device *dev, u32 data);
 };
 
 
@@ -290,6 +292,12 @@ static inline void brcmf_bus_remove(struct brcmf_bus *bus)
 	}
 
 	bus->ops->remove(bus->dev);
+}
+
+static inline void brcmf_bus_mbdata(struct brcmf_bus *bus, u32 data)
+{
+	if (bus->ops->mbdata)
+		bus->ops->mbdata(bus->dev, data);
 }
 
 /*

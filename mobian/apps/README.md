@@ -23,6 +23,27 @@ power dialog, calls and the keyboard. Choosing the launcher: `gsettings set de.y
     `RecentsHold` and `RecentsEnd(s "home"|"recents")`; `GetWindows()` returns `a(ssssuuub)` (id, app id, title,
     raw cairo ARGB32 thumbnail in `$XDG_RUNTIME_DIR/neo-recents/`, width, height, stride, focused); `Activate(id)`,
     `Close(id)`, `CloseAll()`. In Neo mode Phosh shows neither its cards nor the drag thumbnail.
+  * `0104-power-volume-down-screenshot.patch`: power + volume down takes a screenshot, as on Android (either key
+    first, within 700 ms), and the power button's release does not blank the screen.
+  * `0105-screenshot-hide-osd-not-destroy.patch`: the volume popup the combo brings up is made transparent rather
+    than destroyed (destroying it made phoc drop Phosh's connection).
+  * `0106-lockscreen-pattern-lock.patch`: with `de.yesman.neo lock-type` = `pattern`, the unlock page is a 3x3 dot
+    grid; the dots joined in order go to PAM as the password.
+  * `0107-home-no-swipe-home-right-after-rotation.patch`: a home bar drag that ends within a second of a rotation
+    goes nowhere (the resized bar read as a short swipe home).
+  * `0109-settings-panels-open-neo-settings.patch`: every settings panel Phosh opens goes to Neo Settings when it
+    is installed.
+  * `0110-aod-and-double-tap-wake.patch`: Always On Display (`de.yesman.neo aod`): blanking the built-in panel only
+    marks it off, and a black overlay shows the time, the date, the battery and one dim icon per app with
+    notifications, moving a little every minute against burn-in. Double tap to wake (`double-tap-wake`): while
+    blanked, every touchscreen with a `wake_gesture` attribute goes into its low power gesture mode, and its double
+    tap wakes the screen like any key.
+  * `0111-neo-home-transparent-top-bar.patch`: the top bar goes clear over Neo's home screen.
+  * `0112-aod-hides-the-status-bar.patch`: no status bar over the AOD (faded out, so nothing re-lays out).
+  * `0113-background-under-the-bars.patch`: the wallpaper fills the whole screen, under the top and home bars.
+  * `0114-power-key-goes-straight-to-aod.patch`: the power button goes from the unlocked screen straight to the AOD.
+    The lock screen made while the panel is in AOD stays transparent until the AOD goes away, and the AOD is
+    stacked over it whichever was made first; waking shows the lock screen before the AOD goes.
   Build on the phone: `apt-get source phosh`, copy the patches in, add them to `debian/patches/series`,
   `dch -v 0.58.0-1+neo1`, `DEB_BUILD_OPTIONS="nocheck parallel=4" dpkg-buildpackage -b -uc -us`.
 * `phoc/debian/patches/` — added to Debian's phoc 0.58.0-1 as `0.58.0-1+neo1` (built on the phone in
@@ -32,6 +53,8 @@ power dialog, calls and the keyboard. Choosing the launcher: `gsettings set de.y
     dark; transform and scale are applied when rendering. And instead of the black shield while clients re-layout,
     the last frame is copied before the rotation, shown untransformed (so it looks as it did) and cross-faded away
     over 320 ms once the layout transaction is done.
+  * `0002-reject-pending-drag-when-mode-none.patch`: a pending drag is rejected once the client sets drag mode
+    NONE, so an icon Neo picked up with a long press is not taken for a drawer drag.
 * `neo-launcher/` — GJS + GTK4 + libadwaita + gtk4-layer-shell, a TOP-layer surface (exclusive keyboard while shown:
   phoc speaks layer-shell v3, no on-demand focus). Phase 1: pages on a 5×5 grid, page dots, dock (Phosh's
   favourites), wallpaper, a drawer sheet that follows the finger (settles by distance and speed) with search, back gesture from the screen edges (Alt+Left via `wtype`

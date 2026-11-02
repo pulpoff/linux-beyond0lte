@@ -1,0 +1,116 @@
+Index: phosh-0.58.0/src/home.c
+===================================================================
+--- phosh-0.58.0.orig/src/home.c
++++ phosh-0.58.0/src/home.c
+@@ -102,6 +102,7 @@ struct _PhoshHome {
+   GDBusConnection *neo_bus;
+   guint            neo_fold_id;
+   gboolean         neo_present;
++  gboolean         neo_home_shown;   /* Neo's home screen is on screen: the top bar goes clear over it */
+   gboolean         neo_allow_overview;
+   /* home-bar gesture in Neo mode: a swipe up goes home (Neo), a swipe up and hold goes to recents */
+   double           neo_drag_progress;
+@@ -135,6 +136,7 @@ static const char neo_phosh_xml[] =
+   "    <method name='Activate'><arg type='s' name='id' direction='in'/></method>"
+   "    <method name='Close'><arg type='s' name='id' direction='in'/></method>"
+   "    <method name='CloseAll'/>"
++  "    <method name='HomeShown'><arg type='b' name='shown' direction='in'/></method>"
+   "  </interface>"
+   "</node>";
+ 
+@@ -218,9 +220,20 @@ on_neo_shell_locked (PhoshHome *self, GP
+ 
+ 
+ static void
++neo_set_home_shown (PhoshHome *self, gboolean shown)
++{
++  if (self->neo_home_shown == shown)
++    return;
++  self->neo_home_shown = shown;
++  phosh_shell_neo_home_shown_changed (phosh_shell_get_default ());
++}
++
++
++static void
+ on_neo_vanished (GDBusConnection *connection, const char *name, gpointer data)
+ {
+   PHOSH_HOME (data)->neo_present = FALSE;
++  neo_set_home_shown (PHOSH_HOME (data), FALSE);
+ }
+ 
+ 
+@@ -340,6 +353,11 @@ neo_phosh_method_call (GDBusConnection
+ 
+     for (int i = (int) phosh_toplevel_manager_get_num_toplevels (m) - 1; i >= 0; i--)
+       phosh_toplevel_close (phosh_toplevel_manager_get_toplevel (m, i));
++  } else if (g_strcmp0 (method_name, "HomeShown") == 0) {
++    gboolean shown;
++
++    g_variant_get (parameters, "(b)", &shown);
++    neo_set_home_shown (self, shown);
+   }
+   g_dbus_method_invocation_return_value (invocation, NULL);
+ }
+@@ -1333,6 +1351,16 @@ phosh_home_new (struct zwlr_layer_shell_
+                        NULL);
+ }
+ 
++/* Neo: whether Neo's home screen says it is on screen */
++gboolean
++phosh_home_get_neo_shown (PhoshHome *self)
++{
++  g_return_val_if_fail (PHOSH_IS_HOME (self), FALSE);
++
++  return self->neo_home_shown;
++}
++
++
+ /**
+  * phosh_home_get_state:
+  * @self: The home surface
+Index: phosh-0.58.0/src/home.h
+===================================================================
+--- phosh-0.58.0.orig/src/home.h
++++ phosh-0.58.0/src/home.h
+@@ -35,5 +35,6 @@ GtkWidget     *phosh_home_new (struct zw
+                                struct zphoc_layer_shell_effects_v1 *layer_shell_effects,
+                                PhoshMonitor                        *monitor);
+ PhoshHomeState phosh_home_get_state (PhoshHome *self);
++gboolean       phosh_home_get_neo_shown (PhoshHome *self);
+ void           phosh_home_set_state (PhoshHome *self, PhoshHomeState state);
+ PhoshOverview *phosh_home_get_overview (PhoshHome *self);
+Index: phosh-0.58.0/src/shell-priv.h
+===================================================================
+--- phosh-0.58.0.orig/src/shell-priv.h
++++ phosh-0.58.0/src/shell-priv.h
+@@ -150,5 +150,6 @@ PhoshShellNotification *phosh_shell_crea
+ void                  phosh_shell_show_notification (PhoshShell             *self,
+                                                      PhoshShellNotification *noti,
+                                                      int                     timeout);
++void                  phosh_shell_neo_home_shown_changed (PhoshShell *self);
+ 
+ G_END_DECLS
+Index: phosh-0.58.0/src/shell.c
+===================================================================
+--- phosh-0.58.0.orig/src/shell.c
++++ phosh-0.58.0/src/shell.c
+@@ -333,7 +333,18 @@ update_top_bar_transparency (PhoshShell
+ 
+   state = phosh_home_get_state (PHOSH_HOME (priv->home));
+   phosh_top_panel_set_bar_transparent (PHOSH_TOP_PANEL (priv->top_panel),
+-                                       (state != PHOSH_HOME_STATE_FOLDED));
++                                       (state != PHOSH_HOME_STATE_FOLDED) ||
++                                       phosh_home_get_neo_shown (PHOSH_HOME (priv->home)));
++}
++
++
++/* Neo: its home screen came or went; over it the top bar is clear, as over the lock screen */
++void
++phosh_shell_neo_home_shown_changed (PhoshShell *self)
++{
++  g_return_if_fail (PHOSH_IS_SHELL (self));
++
++  update_top_bar_transparency (self);
+ }
+ 
+ 

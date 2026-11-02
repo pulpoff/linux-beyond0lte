@@ -42,6 +42,8 @@
 #include <linux/of.h>
 #include <linux/of_reserved_mem.h>
 #include <linux/platform_device.h>
+#include <linux/pm_wakeirq.h>
+#include <linux/pm_wakeup.h>
 #include <linux/poll.h>
 #include <linux/regmap.h>
 #include <linux/skbuff.h>
@@ -85,9 +87,11 @@
 #define INT_AP2CP_STATUS		2
 #define IRQ_CP2AP_MSG			0
 #define IRQ_CP2AP_STATUS		2
+#define IRQ_CP2AP_WAKELOCK		8
 
 /* fields of the united status words */
 #define SBI_CP_STATUS			GENMASK(4, 1)
+#define SBI_CP2AP_WAKELOCK		BIT(6)
 #define SBI_AP_STATUS			GENMASK(4, 1)
 #define SBI_PDA_ACTIVE			BIT(5)
 #define SBI_SYS_REV			GENMASK(13, 6)
@@ -189,6 +193,17 @@
 static unsigned int ps_ul_ch = PS_CH_FIRST;
 module_param(ps_ul_ch, uint, 0644);
 MODULE_PARM_DESC(ps_ul_ch, "SIPC channel rmnet0 sends on (10 = PDP cid 1 [guess])");
+
+/*
+ * The mailbox interrupt wakes the AP from suspend (stock: enable_irq_wake on
+ * every modem irq), and each CP message keeps it awake this long, so the call
+ * or SMS it carries reaches userspace before anything can suspend again.
+ * Stock holds 200 ms per frame and rild takes its own wakelock; cpd does the
+ * latter here.
+ */
+static unsigned int wake_ms = 1000;
+module_param(wake_ms, uint, 0644);
+MODULE_PARM_DESC(wake_ms, "ms the AP stays awake after each CP message (0 = none)");
 
 /* the channels userspace gets, with their ring (link id) */
 static const struct {
@@ -301,6 +316,7 @@ struct exynos_cp {
 	u32 cp2ap_msg;		/* last value the CP posted with IRQ_CP2AP_MSG */
 	bool init_start;	/* CP posted CMD_INIT_START */
 	unsigned long msg_count;
+	bool cp_wakelock;	/* the CP asked the AP to stay awake */
 
 	/* link, valid once the CP has asked for it */
 	struct cp_ring ring[CP_NUM_LINKS][2];
@@ -1064,6 +1080,21 @@ static irqreturn_t cp_mbox_irq(int irq, void *data)
 	if (stat & MBOX_RX_INT(IRQ_CP2AP_STATUS))
 		dev_dbg(cp->dev, "CP2AP status 0x%08x\n",
 			mbox_get(cp, MBX_CP2AP_STATUS));
+	if (stat & MBOX_RX_INT(IRQ_CP2AP_WAKELOCK)) {
+		bool hold = mbox_get(cp, MBX_CP2AP_STATUS) & SBI_CP2AP_WAKELOCK;
+
+		/* stock shmem_cp2ap_wakelock_handler: a level the CP sets and clears */
+		if (hold != cp->cp_wakelock) {
+			cp->cp_wakelock = hold;
+			if (hold)
+				pm_stay_awake(cp->dev);
+			else
+				pm_relax(cp->dev);
+			dev_dbg(cp->dev, "CP wakelock %s\n", hold ? "held" : "released");
+		}
+	}
+	if (stat & MBOX_RX_INT(IRQ_CP2AP_MSG) && READ_ONCE(wake_ms))
+		pm_wakeup_dev_event(cp->dev, READ_ONCE(wake_ms), false);
 
 	wake_up(&cp->wq);
 	return IRQ_HANDLED;
@@ -1733,8 +1764,16 @@ static int exynos_cp_probe(struct platform_device *pdev)
 					IRQF_ONESHOT, dev_name(dev), cp);
 	if (ret)
 		return ret;
+	/* a call or SMS has to wake the AP: armed for every suspend */
+	ret = devm_device_init_wakeup(dev);
+	if (ret)
+		return ret;
+	ret = dev_pm_set_wake_irq(dev, irq);
+	if (ret)
+		return ret;
 	mbox_unmask(cp, IRQ_CP2AP_MSG);
 	mbox_unmask(cp, IRQ_CP2AP_STATUS);
+	mbox_unmask(cp, IRQ_CP2AP_WAKELOCK);
 
 	cp->boot.minor = MISC_DYNAMIC_MINOR;
 	cp->boot.name = "umts_boot0";
@@ -1816,6 +1855,9 @@ static void exynos_cp_remove(struct platform_device *pdev)
 	for (i = 0; i < CP_NUM_LINKS; i++)
 		for (d = UL; d <= DL; d++)
 			kfree(cp->ring[i][d].frm);
+	dev_pm_clear_wake_irq(&pdev->dev);
+	if (cp->cp_wakelock)
+		pm_relax(&pdev->dev);
 }
 
 static const struct of_device_id exynos_cp_of_match[] = {

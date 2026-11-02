@@ -28,6 +28,8 @@
 #define S6SY761_READ_ALL_EVENT		0x61
 #define S6SY761_CLEAR_EVENT_STACK	0x62
 #define S6SY761_APPLICATION_MODE	0xe4
+#define S6SY761_SPONGE_WRITE_PARAM	0x91
+#define S6SY761_SPONGE_NOTIFY		0x93
 
 /* events */
 #define S6SY761_EVENT_INFO		0x02
@@ -61,6 +63,14 @@
 /* event id */
 #define S6SY761_EVENT_ID_COORDINATE	0x00
 #define S6SY761_EVENT_ID_STATUS		0x01
+#define S6SY761_EVENT_ID_GESTURE	0x02
+
+/* gesture events (low power mode): byte 0 bits 5:2 = type, byte 1 = id */
+#define S6SY761_MASK_GESTURE_TYPE	GENMASK(5, 2)
+#define S6SY761_GESTURE_DOUBLE_TAP	0x01
+
+/* "sponge", the firmware's gesture library: offset 0 holds the low power gestures to report */
+#define S6SY761_SPONGE_MODE_DOUBLETAP	BIT(5)
 
 /* status types */
 #define S6SY761_STATUS_ERR		0
@@ -114,6 +124,11 @@ struct s6sy761_data {
 
 	u16 devid;
 	u8 tx_channel;
+
+	/* double tap to wake: a second input device, so the touchscreen stays a plain touchscreen */
+	struct input_dev *keys;
+	struct mutex mode_lock;
+	bool wake_gesture;
 };
 
 /*
@@ -221,6 +236,22 @@ static void s6sy761_handle_status(struct s6sy761_data *sdata, u8 *event)
 	}
 }
 
+static void s6sy761_handle_gesture(struct s6sy761_data *sdata, u8 *event)
+{
+	u8 type = FIELD_GET(S6SY761_MASK_GESTURE_TYPE, event[0]);
+
+	dev_dbg(&sdata->client->dev, "gesture type %u id %u\n", type, event[1]);
+
+	if (!READ_ONCE(sdata->wake_gesture) || type != S6SY761_GESTURE_DOUBLE_TAP)
+		return;
+
+	pm_wakeup_event(&sdata->client->dev, 0);
+	input_report_key(sdata->keys, KEY_WAKEUP, 1);
+	input_sync(sdata->keys);
+	input_report_key(sdata->keys, KEY_WAKEUP, 0);
+	input_sync(sdata->keys);
+}
+
 static void s6sy761_handle_events(struct s6sy761_data *sdata, u8 n_events)
 {
 	int i;
@@ -240,6 +271,10 @@ static void s6sy761_handle_events(struct s6sy761_data *sdata, u8 n_events)
 
 		case S6SY761_EVENT_ID_STATUS:
 			s6sy761_handle_status(sdata, event);
+			break;
+
+		case S6SY761_EVENT_ID_GESTURE:
+			s6sy761_handle_gesture(sdata, event);
 			break;
 
 		default:
@@ -313,8 +348,155 @@ static ssize_t s6sy761_sysfs_devid(struct device *dev,
 
 static DEVICE_ATTR(devid, 0444, s6sy761_sysfs_devid, NULL);
 
+/* the controller's own power mode, read back as the firmware wants (it can miss a write) */
+static int s6sy761_set_power_mode(struct s6sy761_data *sdata, u8 mode)
+{
+	int i, ret;
+
+	for (i = 0; i < 5; i++) {
+		ret = i2c_smbus_write_byte_data(sdata->client,
+						S6SY761_APPLICATION_MODE, mode);
+		if (ret) {
+			msleep(20);
+			continue;
+		}
+		msleep(50);
+		ret = i2c_smbus_read_byte_data(sdata->client,
+					       S6SY761_APPLICATION_MODE);
+		if (ret == mode)
+			return 0;
+	}
+
+	return ret < 0 ? ret : -EIO;
+}
+
+/*
+ * In low power mode the controller sleeps between its slow scans and NACKs the first transfer that
+ * wakes it; the next one goes through. Poke it until it answers before talking to it.
+ */
+static int s6sy761_wake_chip(struct s6sy761_data *sdata)
+{
+	int i, ret;
+
+	for (i = 0; i < 10; i++) {
+		ret = i2c_smbus_read_byte_data(sdata->client,
+					       S6SY761_APPLICATION_MODE);
+		if (ret >= 0)
+			return 0;
+		msleep(20);
+	}
+
+	return ret;
+}
+
+static int s6sy761_set_sponge(struct s6sy761_data *sdata, u8 gestures)
+{
+	u8 param[3] = { 0x00, 0x00, gestures };	/* offset 0 (le16), value */
+	int ret;
+
+	ret = i2c_smbus_write_i2c_block_data(sdata->client,
+					     S6SY761_SPONGE_WRITE_PARAM,
+					     sizeof(param), param);
+	if (ret)
+		return ret;
+
+	return i2c_smbus_write_byte(sdata->client, S6SY761_SPONGE_NOTIFY);
+}
+
+static void s6sy761_release_all(struct s6sy761_data *sdata)
+{
+	int i;
+
+	for (i = 0; i < sdata->tx_channel; i++) {
+		input_mt_slot(sdata->input, i);
+		input_mt_report_slot_state(sdata->input, MT_TOOL_FINGER, false);
+	}
+	input_sync(sdata->input);
+}
+
+/*
+ * Low power mode with the double tap gesture, while the screen is off: the controller scans slowly and
+ * reports only the gesture, which comes out as KEY_WAKEUP. Userspace switches it on when it blanks the
+ * screen and off when it unblanks.
+ */
+static int s6sy761_set_wake_gesture(struct s6sy761_data *sdata, bool on)
+{
+	int ret;
+
+	guard(mutex)(&sdata->mode_lock);
+
+	if (sdata->wake_gesture == on)
+		return 0;
+
+	ret = s6sy761_wake_chip(sdata);
+	if (ret)
+		return ret;
+
+	if (on) {
+		ret = s6sy761_set_sponge(sdata, S6SY761_SPONGE_MODE_DOUBLETAP);
+		if (ret)
+			return ret;
+		ret = s6sy761_set_power_mode(sdata, S6SY761_APP_LOW_POWER);
+		if (ret)
+			return ret;
+		i2c_smbus_write_byte(sdata->client, S6SY761_CLEAR_EVENT_STACK);
+		s6sy761_release_all(sdata);
+		WRITE_ONCE(sdata->wake_gesture, true);
+		if (device_may_wakeup(&sdata->client->dev))
+			enable_irq_wake(sdata->client->irq);
+	} else {
+		WRITE_ONCE(sdata->wake_gesture, false);
+		if (device_may_wakeup(&sdata->client->dev))
+			disable_irq_wake(sdata->client->irq);
+		ret = s6sy761_set_power_mode(sdata, S6SY761_APP_NORMAL);
+		if (ret) {
+			/* still asleep in low power: keep saying so, so a retry tries again */
+			WRITE_ONCE(sdata->wake_gesture, true);
+			if (device_may_wakeup(&sdata->client->dev))
+				enable_irq_wake(sdata->client->irq);
+			return ret;
+		}
+		s6sy761_set_sponge(sdata, 0);
+		i2c_smbus_write_byte(sdata->client, S6SY761_CLEAR_EVENT_STACK);
+	}
+
+	return 0;
+}
+
+static ssize_t wake_gesture_show(struct device *dev,
+				 struct device_attribute *attr, char *buf)
+{
+	struct s6sy761_data *sdata = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%d\n", READ_ONCE(sdata->wake_gesture));
+}
+
+static ssize_t wake_gesture_store(struct device *dev,
+				  struct device_attribute *attr,
+				  const char *buf, size_t count)
+{
+	struct s6sy761_data *sdata = dev_get_drvdata(dev);
+	bool on;
+	int ret;
+
+	ret = kstrtobool(buf, &on);
+	if (ret)
+		return ret;
+
+	ret = s6sy761_set_wake_gesture(sdata, on);
+	if (ret) {
+		dev_err(dev, "failed to switch the wake gesture %s: %d\n", on ? "on" : "off", ret);
+		return ret;
+	}
+
+	return count;
+}
+
+static DEVICE_ATTR_RW(wake_gesture);
+
 static struct attribute *s6sy761_sysfs_attrs[] = {
 	&dev_attr_devid.attr,
+	&dev_attr_wake_gesture.attr,
 	NULL
 };
 ATTRIBUTE_GROUPS(s6sy761_sysfs);
@@ -434,6 +616,7 @@ static int s6sy761_probe(struct i2c_client *client)
 
 	i2c_set_clientdata(client, sdata);
 	sdata->client = client;
+	mutex_init(&sdata->mode_lock);
 
 	sdata->regulators[S6SY761_REGULATOR_VDD].supply = "vdd";
 	sdata->regulators[S6SY761_REGULATOR_AVDD].supply = "avdd";
@@ -485,6 +668,20 @@ static int s6sy761_probe(struct i2c_client *client)
 	err = input_register_device(sdata->input);
 	if (err)
 		return err;
+
+	sdata->keys = devm_input_allocate_device(&client->dev);
+	if (!sdata->keys)
+		return -ENOMEM;
+
+	sdata->keys->name = S6SY761_DEV_NAME " gestures";
+	sdata->keys->id.bustype = BUS_I2C;
+	input_set_capability(sdata->keys, EV_KEY, KEY_WAKEUP);
+
+	err = input_register_device(sdata->keys);
+	if (err)
+		return err;
+
+	device_init_wakeup(&client->dev, true);
 
 	err = devm_request_threaded_irq(&client->dev, client->irq, NULL,
 					s6sy761_irq_handler,

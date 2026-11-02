@@ -46,7 +46,7 @@ Services and configuration
 | File | What it does |
 | --- | --- |
 | `exynos-modem.service` | Loads `exynos9820-cp`, boots the CP from the `radio` partition (`exynos-cpboot`), then runs `exynos-cpd`. |
-| `exynos-cpd` | The radio daemon in place of Samsung's rild: Samsung IPC over the shared-memory link, the CP's remote file system (NV writes go to its own copy, never the EFS partition), and an AT bridge (`/dev/wwan0at0`) through which ModemManager places calls and reads SMS. Sets the LTE attach APN only when the SIM does not register within 30 s; the APN comes from `/var/lib/exynos-cp/apn`, else from the provider database by the SIM's MCC/MNC. |
+| `exynos-cpd` | The radio daemon in place of Samsung's rild: Samsung IPC over the shared-memory link, the CP's remote file system (NV writes go to its own copy, never the EFS partition), and an AT bridge (`/dev/wwan0at0`) through which ModemManager places calls and reads SMS. Sets the LTE attach APN only when the SIM does not register within 30 s; the APN comes from `/var/lib/exynos-cp/apn`, else from the provider database by the SIM's MCC/MNC. Holds a timed kernel wakelock (`/sys/power/wake_lock`) while a call rings or is up and for 10 s after an SMS arrives, so suspend cannot cut them off. |
 | `exynos-callaudio`, `exynos-callaudiod`, `org.mobian_project.CallAudio.service` | Call audio. In a call the voice path runs in ABOX's firmware (calliope) with PipeWire stopped; `exynos-callaudio start\|stop` (called by `exynos-cpd`) sets that up, and `exynos-callaudiod` replaces callaudiod for Phosh's speaker and mute buttons. |
 | `s10e-gpu-load(.service)`, `s10e-gpu-manual.conf`, `phosh.service.d/gpu.conf` | panfrost is blacklisted and loaded only after checking that the G3D power domain is up, then phoc renders on it (`/run/s10e-gpu.env`). |
 | `s10e-touch-bind(.service)` | The S6SY761 can NAK its first probe on a fast boot; this rebinds it. |
@@ -65,7 +65,7 @@ Services and configuration
 | `neo-cec@.service`, `neo-cec-recheck.*`, `neo-cec-probe`, `72-neo-cec.rules`, `neo-cec.conf` | HDMI CEC through docks that tunnel it over DP AUX: the phone claims a playback address and becomes the active source. |
 | `s10e-camera.conf`, `60-libcamera-softisp.conf`, `60-neo-snapshot.gschema.override` | Camera modules and libcamera's GPU software ISP; the camera app's defaults. |
 | `60-s10e-audio.conf` | WirePlumber settings for the S10e card. |
-| `61-s10e-watchdog.conf`, `s10e-persistent.conf` | The hardware watchdog; a persistent journal. |
+| `61-s10e-watchdog.conf`, `s10e-persistent.conf` | Leaves systemd's watchdog unarmed (`watchdog0` is only softdog: the device tree has no hardware watchdog yet); a persistent journal. |
 | `s10e-input` | Synthetic taps and swipes on the touchscreen, for testing. |
 
 Recovery zip (`zip/`)
@@ -107,7 +107,8 @@ Launcher and apps (`apps/`)
 * `neo-settings/`: Neo Settings, a GTK 4 settings app. `neo-weather/`: the weather app and widget.
 * `compass/`, `neo-browser/`: the compass and the browser (GJS).
 * `phosh/debian/patches/`, `phoc/debian/patches/`: patches on Debian's Phosh and phoc 0.58.0 (the launcher
-  hooks, Neo's recents, the pattern lock, rotation without a modeset...). `README.md` describes each one and
+  hooks, Neo's recents, the pattern lock, the Always On Display and double tap to wake, rotation without a
+  modeset...). `README.md` describes each one and
   how they are built; `build-debs.sh` builds the packages.
 
 Out-of-tree modules (`modules/`)

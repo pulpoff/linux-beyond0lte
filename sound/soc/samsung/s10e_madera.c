@@ -119,6 +119,20 @@ SND_SOC_DAILINK_DEFS(speaker,
 			   COMP_CODEC(NULL, "cs35l41-pcm")),
 	DAILINK_COMP_ARRAY(COMP_EMPTY()));
 
+/*
+ * The call itself, digitally (exynos9820-abox.c): the downlink as the CP
+ * sends it, and an uplink that can replace the mics. hw:0,2 and hw:0,3.
+ */
+SND_SOC_DAILINK_DEFS(call_dl,
+	DAILINK_COMP_ARRAY(COMP_CPU("abox-call-dl")),
+	DAILINK_COMP_ARRAY(COMP_DUMMY()),
+	DAILINK_COMP_ARRAY(COMP_EMPTY()));
+
+SND_SOC_DAILINK_DEFS(call_ul,
+	DAILINK_COMP_ARRAY(COMP_CPU("abox-call-ul")),
+	DAILINK_COMP_ARRAY(COMP_DUMMY()),
+	DAILINK_COMP_ARRAY(COMP_EMPTY()));
+
 static struct snd_soc_dai_link s10e_dai_links[] = {
 	{
 		.name = "Codec AIF1",
@@ -139,6 +153,20 @@ static struct snd_soc_dai_link s10e_dai_links[] = {
 		.playback_only = 1,
 		.ops = &s10e_amp_ops,
 		SND_SOC_DAILINK_REG(speaker),
+	},
+	{
+		.name = "Call Downlink",
+		.stream_name = "Call Downlink",
+		.capture_only = 1,
+		.ignore_suspend = 1,
+		SND_SOC_DAILINK_REG(call_dl),
+	},
+	{
+		.name = "Call Uplink",
+		.stream_name = "Call Uplink",
+		.playback_only = 1,
+		.ignore_suspend = 1,
+		SND_SOC_DAILINK_REG(call_ul),
 	},
 };
 
@@ -163,6 +191,8 @@ static int s10e_madera_probe(struct platform_device *pdev)
 	struct device_node *codec, *cpu;
 	struct snd_soc_dai_link *aif1 = &s10e_dai_links[0];
 	struct snd_soc_dai_link *spk = &s10e_dai_links[1];
+	struct snd_soc_dai_link *call_dl = &s10e_dai_links[2];
+	struct snd_soc_dai_link *call_ul = &s10e_dai_links[3];
 
 	codec = of_parse_phandle(dev->of_node, "samsung,audio-codec", 0);
 	if (!codec)
@@ -178,6 +208,10 @@ static int s10e_madera_probe(struct platform_device *pdev)
 	aif1->platforms->of_node = cpu;
 	spk->cpus->of_node = cpu;
 	spk->platforms->of_node = cpu;
+	call_dl->cpus->of_node = cpu;
+	call_dl->platforms->of_node = cpu;
+	call_ul->cpus->of_node = cpu;
+	call_ul->platforms->of_node = cpu;
 	for (int i = 0; i < spk->num_codecs; i++) {
 		spk->codecs[i].of_node = of_parse_phandle(dev->of_node,
 							  "samsung,speaker-amps",

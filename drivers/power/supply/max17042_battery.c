@@ -128,6 +128,11 @@ static int max17042_get_temperature(struct max17042_chip *chip, int *temp)
 	return 0;
 }
 
+static bool supplied_is_charging = true;
+module_param(supplied_is_charging, bool, 0644);
+MODULE_PARM_DESC(supplied_is_charging,
+		 "Report a supplied, not full battery as charging even while it discharges");
+
 static int max17042_get_status(struct max17042_chip *chip, int *status)
 {
 	int ret, charge_full, charge_now;
@@ -169,9 +174,12 @@ static int max17042_get_status(struct max17042_chip *chip, int *status)
 
 	/*
 	 * Even though we are supplied, we may still be discharging if the
-	 * supply is e.g. only delivering 5V 0.5A. Check current if available.
+	 * supply is e.g. only delivering 5V 0.5A. Check current if available,
+	 * unless told to report a supplied battery as charging the way
+	 * Android does ("charging slowly"): the sign of the instantaneous
+	 * current flips with every change in load near 0.5A.
 	 */
-	if (!chip->enable_current_sense) {
+	if (!chip->enable_current_sense || supplied_is_charging) {
 		*status = POWER_SUPPLY_STATUS_CHARGING;
 		return 0;
 	}

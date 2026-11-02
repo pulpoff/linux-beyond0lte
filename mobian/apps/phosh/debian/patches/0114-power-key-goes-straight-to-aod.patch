@@ -1,0 +1,140 @@
+From: pulpoff <pashkovsky@gmail.com>
+Subject: The power button goes from the unlocked screen straight to the AOD (de.yesman.neo aod)
+
+With aod on, blanking an unlocked screen made the lock screen and the AOD in the same go, and whichever drew
+first showed: the lock screen flashed before the AOD (or, made after it, the lock screen covered it). A lock
+screen made while the built-in panel is in AOD (power button, idle, lock delay, suspend) is now never seen:
+it and its background stay transparent until the AOD goes away, and the AOD is stacked over it whichever was
+made first. Waking shows the lock screen before the AOD goes, so unlocking still needs it. The AOD's style
+provider is added once instead of once per AOD (each restyled the whole shell before the AOD's first frame).
+---
+--- a/src/aod.c	2026-11-02 00:51:19.733380376 +0100
++++ b/src/aod.c	2026-11-02 00:50:39.355852711 +0100
+@@ -145,7 +145,7 @@
+   PhoshAod *self = PHOSH_AOD (object);
+   PhoshWayland *wl = phosh_wayland_get_default ();
+   PhoshNotifyManager *nm = phosh_notify_manager_get_default ();
+-  g_autoptr (GtkCssProvider) css = gtk_css_provider_new ();
++  static GtkCssProvider *css;
+   GtkWidget *battery, *bottom;
+ 
+   if (self->monitor == NULL)
+@@ -166,9 +166,14 @@
+ 
+   G_OBJECT_CLASS (phosh_aod_parent_class)->constructed (object);
+ 
+-  gtk_css_provider_load_from_data (css, aod_css, -1, NULL);
+-  gtk_style_context_add_provider_for_screen (gdk_screen_get_default (), GTK_STYLE_PROVIDER (css),
+-                                             GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 10);
++  /* once: a provider added per AOD restyled the whole shell every time the screen went off, before the AOD's
++   * first frame, and they piled up */
++  if (!css) {
++    css = gtk_css_provider_new ();
++    gtk_css_provider_load_from_data (css, aod_css, -1, NULL);
++    gtk_style_context_add_provider_for_screen (gdk_screen_get_default (), GTK_STYLE_PROVIDER (css),
++                                               GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 10);
++  }
+   gtk_style_context_add_class (gtk_widget_get_style_context (GTK_WIDGET (self)), "phosh-aod");
+ 
+   /* the clock sits a third down, as on Samsung's AOD; battery and app icons under it */
+--- a/src/lockscreen-priv.h	2026-11-02 00:51:19.743760303 +0100
++++ b/src/lockscreen-priv.h	2026-11-02 00:50:39.353647130 +0100
+@@ -15,5 +15,6 @@
+ GtkWidget *phosh_lockscreen_new (GType lockscreen_type, gpointer layer_shell, gpointer wl_output,
+                                  PhoshCallsManager *calls_manager);
+ void       phosh_lockscreen_set_bg_image (PhoshLockscreen *self, PhoshBackgroundImage *image);
++void       phosh_lockscreen_set_hidden (PhoshLockscreen *self, gboolean hidden);
+ 
+ G_END_DECLS
+--- a/src/lockscreen.c	2026-11-02 00:51:19.739514666 +0100
++++ b/src/lockscreen.c	2026-11-02 00:50:39.354042296 +0100
+@@ -1541,6 +1541,27 @@
+ }
+ 
+ /**
++ * phosh_lockscreen_set_hidden:
++ * @self: The `PhoshLockscreen`
++ * @hidden: Whether the lock screen and its background are fully transparent
++ *
++ * Neo: a lock screen made on the way into the always-on display stays hidden under it, so the screen goes
++ * from unlocked straight to the AOD. It still takes the keyboard and the touches it gets.
++ */
++void
++phosh_lockscreen_set_hidden (PhoshLockscreen *self, gboolean hidden)
++{
++  PhoshLockscreenPrivate *priv;
++
++  g_return_if_fail (PHOSH_IS_LOCKSCREEN (self));
++  priv = phosh_lockscreen_get_instance_private (self);
++
++  phosh_layer_surface_set_alpha (PHOSH_LAYER_SURFACE (self), hidden ? 0.0 : 1.0);
++  if (priv->background)
++    phosh_layer_surface_set_alpha (PHOSH_LAYER_SURFACE (priv->background), hidden ? 0.0 : 1.0);
++}
++
++/**
+  * phosh_lockscreen_get_page:
+  * @self: The `PhoshLockscreen`
+  *
+--- a/src/shell.c	2026-11-02 00:51:19.736621796 +0100
++++ b/src/shell.c	2026-11-02 00:51:19.721514576 +0100
+@@ -59,6 +59,7 @@
+ #include "layout-manager.h"
+ #include "location-manager.h"
+ #include "lockscreen-manager-priv.h"
++#include "lockscreen-priv.h"
+ #include "default-media-player.h"
+ #include "mode-manager.h"
+ #include "monitor-manager.h"
+@@ -385,6 +386,18 @@
+ }
+ 
+ 
++/* Neo: the AOD goes over the lock screen, whichever of the two was made first */
++static void
++neo_aod_over_lockscreen (PhoshShell *self)
++{
++  PhoshShellPrivate *priv = phosh_shell_get_instance_private (self);
++  PhoshLockscreen *lockscreen = phosh_lockscreen_manager_get_lockscreen (priv->lockscreen_manager);
++
++  if (priv->aod && lockscreen)
++    phosh_layer_surface_set_stacked_above (PHOSH_LAYER_SURFACE (priv->aod), PHOSH_LAYER_SURFACE (lockscreen));
++}
++
++
+ static void
+ neo_blanked_changed (PhoshShell *self, PhoshMonitor *monitor, gboolean blanked)
+ {
+@@ -395,8 +408,14 @@
+     if (!priv->aod) {
+       priv->aod = phosh_aod_new (monitor);
+       gtk_widget_show (GTK_WIDGET (priv->aod));
++      neo_aod_over_lockscreen (self);
+     }
+   } else {
++    PhoshLockscreen *lockscreen = phosh_lockscreen_manager_get_lockscreen (priv->lockscreen_manager);
++
++    /* waking up: the lock screen hidden on the way in shows before the AOD goes */
++    if (lockscreen)
++      phosh_lockscreen_set_hidden (lockscreen, FALSE);
+     g_clear_pointer (&priv->aod, phosh_cp_widget_destroy);
+   }
+   /* no status bar over the AOD: faded out rather than hidden, so its exclusive zone stays and nothing re-lays out */
+@@ -546,6 +565,17 @@
+   phosh_shell_set_state (self, PHOSH_STATE_LOCKED, priv->locked);
+   g_object_notify_by_pspec (G_OBJECT (self), props[PROP_LOCKED]);
+ 
++  /* Neo: locked on the way into the AOD (power button, idle, lock delay): that lock screen was never on
++   * screen, so it stays hidden under the AOD, which may not have drawn yet, until the AOD goes away */
++  if (locked && priv->primary_monitor && priv->primary_monitor->aod &&
++      phosh_monitor_get_power_save_mode (priv->primary_monitor) == PHOSH_MONITOR_POWER_SAVE_MODE_OFF) {
++    PhoshLockscreen *lockscreen = phosh_lockscreen_manager_get_lockscreen (priv->lockscreen_manager);
++
++    if (lockscreen)
++      phosh_lockscreen_set_hidden (lockscreen, TRUE);
++    neo_aod_over_lockscreen (self);
++  }
++
+   /* Hide settings on screen lock, otherwise the user just sees the settings when
+      unblanking the screen which can be confusing */
+   if (priv->top_panel)

@@ -1328,11 +1328,12 @@ static const struct samsung_pin_bank_data exynos9820_pin_banks6[] __initconst = 
 	GS101_PIN_BANK_EINTG(5, 0x100, "gph1", 0x20, 0x38),
 };
 
-/* pin banks of exynos9820 pin-controller 7 (VTS) */
-static const struct samsung_pin_bank_data exynos9820_pin_banks7[] __initconst = {
-	GS101_PIN_BANK_EINTG(4, 0x000, "gpv0", 0x00, 0x00),
-};
-
+/*
+ * Pin-controller 7 (VTS, gpv0 at 0x15580000) is left out: it sits in pd_vts,
+ * which genpd powers off once nothing uses it, and the late suspend that
+ * saves every bank then reads an unpowered block and stalls the SoC. Nothing
+ * here uses the voice trigger pins.
+ */
 static const struct samsung_pin_ctrl exynos9820_pin_ctrl[] __initconst = {
 	{
 		/* pin-controller instance 0 ALIVE data */
@@ -1380,10 +1381,6 @@ static const struct samsung_pin_ctrl exynos9820_pin_ctrl[] __initconst = {
 		.eint_gpio_init	= exynos_eint_gpio_init,
 		.suspend	= gs101_pinctrl_suspend,
 		.resume		= gs101_pinctrl_resume,
-	}, {
-		/* pin-controller instance 7 VTS data */
-		.pin_banks	= exynos9820_pin_banks7,
-		.nr_banks	= ARRAY_SIZE(exynos9820_pin_banks7),
 	},
 };
 

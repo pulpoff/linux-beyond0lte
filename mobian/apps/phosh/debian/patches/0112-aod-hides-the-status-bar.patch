@@ -1,0 +1,14 @@
+Index: phosh-0.58.0/src/shell.c
+===================================================================
+--- phosh-0.58.0.orig/src/shell.c
++++ phosh-0.58.0/src/shell.c
+@@ -399,6 +399,9 @@ neo_blanked_changed (PhoshShell *self, P
+   } else {
+     g_clear_pointer (&priv->aod, phosh_cp_widget_destroy);
+   }
++  /* no status bar over the AOD: faded out rather than hidden, so its exclusive zone stays and nothing re-lays out */
++  if (priv->top_panel)
++    phosh_layer_surface_set_alpha (PHOSH_LAYER_SURFACE (priv->top_panel), priv->aod ? 0.0 : 1.0);
+ 
+   if (!priv->neo_settings) {
+     g_autoptr (GSettingsSchema) schema = NULL;

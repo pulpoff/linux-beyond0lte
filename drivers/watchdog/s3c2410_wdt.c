@@ -147,11 +147,13 @@ static bool nowayout	= WATCHDOG_NOWAYOUT;
 static int tmr_margin;
 static int tmr_atboot	= S3C2410_WATCHDOG_ATBOOT;
 static int soft_noboot;
+static bool keep_in_suspend;
 
 module_param(tmr_margin,  int, 0);
 module_param(tmr_atboot,  int, 0);
 module_param(nowayout,   bool, 0);
 module_param(soft_noboot, int, 0);
+module_param(keep_in_suspend, bool, 0644);
 
 MODULE_PARM_DESC(tmr_margin, "Watchdog tmr_margin in seconds. (default="
 		__MODULE_STRING(S3C2410_WATCHDOG_DEFAULT_TIME) ")");
@@ -161,6 +163,8 @@ MODULE_PARM_DESC(tmr_atboot,
 MODULE_PARM_DESC(nowayout, "Watchdog cannot be stopped once started (default="
 			__MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
 MODULE_PARM_DESC(soft_noboot, "Watchdog action, set to 1 to ignore reboots, 0 to reboot (default 0)");
+MODULE_PARM_DESC(keep_in_suspend,
+		 "Keep a running watchdog counting through system suspend, so a hang in a late suspend phase resets (default 0)");
 
 /**
  * struct s3c2410_wdt_variant - Per-variant config data
@@ -201,6 +205,7 @@ struct s3c2410_wdt {
 	spinlock_t		lock;
 	unsigned long		wtcon_save;
 	unsigned long		wtdat_save;
+	bool			kept_in_suspend;
 	struct watchdog_device	wdt_device;
 	struct notifier_block	freq_transition;
 	const struct s3c2410_wdt_variant *drv_data;
@@ -890,6 +895,10 @@ static int s3c2410wdt_suspend(struct device *dev)
 	int ret;
 	struct s3c2410_wdt *wdt = dev_get_drvdata(dev);
 
+	wdt->kept_in_suspend = READ_ONCE(keep_in_suspend);
+	if (wdt->kept_in_suspend)
+		return 0;
+
 	/* Save watchdog state, and turn it off. */
 	wdt->wtcon_save = readl(wdt->reg_base + S3C2410_WTCON);
 	wdt->wtdat_save = readl(wdt->reg_base + S3C2410_WTDAT);
@@ -908,6 +917,9 @@ static int s3c2410wdt_resume(struct device *dev)
 {
 	int ret;
 	struct s3c2410_wdt *wdt = dev_get_drvdata(dev);
+
+	if (wdt->kept_in_suspend)
+		return 0;
 
 	/* Restore watchdog state. */
 	writel(wdt->wtdat_save, wdt->reg_base + S3C2410_WTDAT);

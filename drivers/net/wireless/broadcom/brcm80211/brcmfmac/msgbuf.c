@@ -47,6 +47,8 @@
 #define MSGBUF_TYPE_RX_CMPLT			0x12
 #define MSGBUF_TYPE_LPBK_DMAXFER		0x13
 #define MSGBUF_TYPE_LPBK_DMAXFER_CMPLT		0x14
+#define MSGBUF_TYPE_H2D_MAILBOX_DATA		0x23
+#define MSGBUF_TYPE_D2H_MAILBOX_DATA		0x24
 
 #define NR_TX_PKTIDS				2048
 #define NR_RX_PKTIDS				1024
@@ -216,6 +218,20 @@ struct msgbuf_flowring_flush_resp {
 	struct msgbuf_common_hdr	msg;
 	struct msgbuf_completion_hdr	compl_hdr;
 	__le32				rsvd0[3];
+};
+
+/* mailbox data in the control rings, from shared version 6 (unless the dongle asks for the mailbox) */
+struct msgbuf_h2d_mailbox_data {
+	struct msgbuf_common_hdr	msg;
+	__le32				mbdata;
+	__le32				rsvd0[7];
+};
+
+struct msgbuf_d2h_mailbox_data {
+	struct msgbuf_common_hdr	msg;
+	struct msgbuf_completion_hdr	compl_hdr;
+	__le32				mbdata;
+	__le32				rsvd0[2];
 };
 
 struct brcmf_msgbuf_work_item {
@@ -466,6 +482,39 @@ static int brcmf_msgbuf_tx_ioctl(struct brcmf_pub *drvr, int ifidx,
 		memcpy(msgbuf->ioctbuf, buf, buf_len);
 	else
 		memset(msgbuf->ioctbuf, 0, buf_len);
+
+	err = brcmf_commonring_write_complete(commonring);
+	brcmf_commonring_unlock(commonring);
+
+	return err;
+}
+
+
+int brcmf_proto_msgbuf_send_mbdata(struct device *dev, u32 mbdata)
+{
+	struct brcmf_bus *bus_if = dev_get_drvdata(dev);
+	struct brcmf_pub *drvr = bus_if->drvr;
+	struct brcmf_msgbuf *msgbuf;
+	struct brcmf_commonring *commonring;
+	struct msgbuf_h2d_mailbox_data *request;
+	int err;
+
+	if (!drvr || !drvr->proto || !drvr->proto->pd)
+		return -ENODEV;
+	msgbuf = (struct brcmf_msgbuf *)drvr->proto->pd;
+
+	commonring = msgbuf->commonrings[BRCMF_H2D_MSGRING_CONTROL_SUBMIT];
+	brcmf_commonring_lock(commonring);
+	request = brcmf_commonring_reserve_for_write(commonring);
+	if (!request) {
+		bphy_err(drvr, "Failed to reserve space in commonring\n");
+		brcmf_commonring_unlock(commonring);
+		return -ENOMEM;
+	}
+
+	memset(request, 0, sizeof(*request));
+	request->msg.msgtype = MSGBUF_TYPE_H2D_MAILBOX_DATA;
+	request->mbdata = cpu_to_le32(mbdata);
 
 	err = brcmf_commonring_write_complete(commonring);
 	brcmf_commonring_unlock(commonring);
@@ -1326,6 +1375,11 @@ static void brcmf_msgbuf_process_msgtype(struct brcmf_msgbuf *msgbuf, void *buf)
 	case MSGBUF_TYPE_RX_CMPLT:
 		brcmf_dbg(MSGBUF, "MSGBUF_TYPE_RX_CMPLT\n");
 		brcmf_msgbuf_process_rx_complete(msgbuf, buf);
+		break;
+	case MSGBUF_TYPE_D2H_MAILBOX_DATA:
+		brcmf_dbg(MSGBUF, "MSGBUF_TYPE_D2H_MAILBOX_DATA\n");
+		brcmf_bus_mbdata(drvr->bus_if,
+				 le32_to_cpu(((struct msgbuf_d2h_mailbox_data *)buf)->mbdata));
 		break;
 	default:
 		bphy_err(drvr, "Unsupported msgtype %d\n", msg->msgtype);

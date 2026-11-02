@@ -222,6 +222,7 @@ static const struct brcmf_firmware_mapping brcmf_pcie_fwnames[] = {
 #define BRCMF_PCIE_SHARED_VERSION_MASK		0x00FF
 #define BRCMF_PCIE_SHARED_DMA_INDEX		0x10000
 #define BRCMF_PCIE_SHARED_DMA_2B_IDX		0x100000
+#define BRCMF_PCIE_SHARED_USE_MAILBOX		0x2000000
 #define BRCMF_PCIE_SHARED_HOSTRDY_DB1		0x10000000
 
 #define BRCMF_HOSTCAP_H2D_ENABLE_HOSTRDY	0x00000400
@@ -354,6 +355,8 @@ struct brcmf_pciedev_info {
 	struct brcmf_pcie_shared_info shared;
 	wait_queue_head_t mbdata_resp_wait;
 	bool mbdata_completed;
+	bool mbdata_in_ring;	/* mailbox data goes through the control rings */
+	u32 ds_enter_reqs;	/* deep sleep requests from the dongle */
 	bool irq_allocated;
 	bool wowl_enabled;
 	u8 dma_idx_sz;
@@ -776,6 +779,10 @@ brcmf_pcie_send_mb_data(struct brcmf_pciedev_info *devinfo, u32 htod_mb_data)
 	u32 cur_htod_mb_data;
 	u32 i;
 
+	if (devinfo->mbdata_in_ring)
+		return brcmf_proto_msgbuf_send_mbdata(&devinfo->pdev->dev,
+						      htod_mb_data);
+
 	shared = &devinfo->shared;
 	addr = shared->htod_mb_data_addr;
 	cur_htod_mb_data = brcmf_pcie_read_tcm32(devinfo, addr);
@@ -805,6 +812,43 @@ brcmf_pcie_send_mb_data(struct brcmf_pciedev_info *devinfo, u32 htod_mb_data)
 }
 
 
+static void brcmf_pcie_process_mb_data(struct brcmf_pciedev_info *devinfo,
+				       u32 dtoh_mb_data)
+{
+	brcmf_dbg(PCIE, "D2H_MB_DATA: 0x%04x\n", dtoh_mb_data);
+	if (dtoh_mb_data & BRCMF_D2H_DEV_DS_ENTER_REQ)  {
+		brcmf_dbg(PCIE, "D2H_MB_DATA: DEEP SLEEP REQ\n");
+		/*
+		 * Through the control ring the ACK really reaches the dongle,
+		 * and without the in-band device-wake handshake stock dhd uses
+		 * nothing wakes it before the next host access. Left unacked
+		 * the dongle stays awake, as it always did while the ACK went
+		 * to a TCM mailbox the firmware never reads.
+		 */
+		if (++devinfo->ds_enter_reqs == 1 || devinfo->ds_enter_reqs % 1000 == 0)
+			dev_info(&devinfo->pdev->dev,
+				 "deep sleep request %u from the dongle, %s\n",
+				 devinfo->ds_enter_reqs,
+				 devinfo->mbdata_in_ring ? "not acked" : "acked");
+		if (!devinfo->mbdata_in_ring) {
+			brcmf_pcie_send_mb_data(devinfo, BRCMF_H2D_HOST_DS_ACK);
+			brcmf_dbg(PCIE, "D2H_MB_DATA: sent DEEP SLEEP ACK\n");
+		}
+	}
+	if (dtoh_mb_data & BRCMF_D2H_DEV_DS_EXIT_NOTE)
+		brcmf_dbg(PCIE, "D2H_MB_DATA: DEEP SLEEP EXIT\n");
+	if (dtoh_mb_data & BRCMF_D2H_DEV_D3_ACK) {
+		brcmf_dbg(PCIE, "D2H_MB_DATA: D3 ACK\n");
+		devinfo->mbdata_completed = true;
+		wake_up(&devinfo->mbdata_resp_wait);
+	}
+	if (dtoh_mb_data & BRCMF_D2H_DEV_FWHALT) {
+		brcmf_dbg(PCIE, "D2H_MB_DATA: FW HALT\n");
+		brcmf_fw_crashed(&devinfo->pdev->dev);
+	}
+}
+
+
 static void brcmf_pcie_handle_mb_data(struct brcmf_pciedev_info *devinfo)
 {
 	struct brcmf_pcie_shared_info *shared;
@@ -819,24 +863,16 @@ static void brcmf_pcie_handle_mb_data(struct brcmf_pciedev_info *devinfo)
 		return;
 
 	brcmf_pcie_write_tcm32(devinfo, addr, 0);
+	brcmf_pcie_process_mb_data(devinfo, dtoh_mb_data);
+}
 
-	brcmf_dbg(PCIE, "D2H_MB_DATA: 0x%04x\n", dtoh_mb_data);
-	if (dtoh_mb_data & BRCMF_D2H_DEV_DS_ENTER_REQ)  {
-		brcmf_dbg(PCIE, "D2H_MB_DATA: DEEP SLEEP REQ\n");
-		brcmf_pcie_send_mb_data(devinfo, BRCMF_H2D_HOST_DS_ACK);
-		brcmf_dbg(PCIE, "D2H_MB_DATA: sent DEEP SLEEP ACK\n");
-	}
-	if (dtoh_mb_data & BRCMF_D2H_DEV_DS_EXIT_NOTE)
-		brcmf_dbg(PCIE, "D2H_MB_DATA: DEEP SLEEP EXIT\n");
-	if (dtoh_mb_data & BRCMF_D2H_DEV_D3_ACK) {
-		brcmf_dbg(PCIE, "D2H_MB_DATA: D3 ACK\n");
-		devinfo->mbdata_completed = true;
-		wake_up(&devinfo->mbdata_resp_wait);
-	}
-	if (dtoh_mb_data & BRCMF_D2H_DEV_FWHALT) {
-		brcmf_dbg(PCIE, "D2H_MB_DATA: FW HALT\n");
-		brcmf_fw_crashed(&devinfo->pdev->dev);
-	}
+
+/* bus op: mailbox data that came in a control completion (mbdata_in_ring) */
+static void brcmf_pcie_mbdata(struct device *dev, u32 data)
+{
+	struct brcmf_bus *bus = dev_get_drvdata(dev);
+
+	brcmf_pcie_process_mb_data(bus->bus_priv.pcie->devinfo, data);
 }
 
 
@@ -1601,6 +1637,7 @@ static const struct brcmf_bus_ops brcmf_pcie_bus_ops = {
 	.get_blob = brcmf_pcie_get_blob,
 	.reset = brcmf_pcie_reset,
 	.debugfs_create = brcmf_pcie_debugfs_create,
+	.mbdata = brcmf_pcie_mbdata,
 };
 
 
@@ -1686,6 +1723,16 @@ brcmf_pcie_init_share_ram_info(struct brcmf_pciedev_info *devinfo,
 				       sharedram_addr + BRCMF_SHARED_HOST_CAP_OFFSET,
 				       host_cap);
 		brcmf_dbg(PCIE, "host_cap %08x\n", host_cap);
+
+		/*
+		 * As in Broadcom's own dhd: from version 6 the dongle reads
+		 * mailbox data from the control submit ring and answers in
+		 * the control completion ring, unless it sets USE_MAILBOX.
+		 * Written to the TCM mailbox, D3_INFORM was never answered
+		 * (BCM4375) and every suspend failed with -EIO.
+		 */
+		devinfo->mbdata_in_ring =
+			!(shared->flags & BRCMF_PCIE_SHARED_USE_MAILBOX);
 	}
 
 	brcmf_pcie_bus_console_init(devinfo);
@@ -2700,10 +2747,11 @@ static int brcmf_pcie_pm_leave_D3(struct device *dev)
 	/* Check if device is still up and running, if so we are ready */
 	if (brcmf_pcie_read_reg32(devinfo, devinfo->reginfo->intmask) != 0) {
 		brcmf_dbg(PCIE, "Try to wakeup device....\n");
+		/* a ring's doorbell only rings while the bus is up */
+		devinfo->state = BRCMFMAC_PCIE_STATE_UP;
 		if (brcmf_pcie_send_mb_data(devinfo, BRCMF_H2D_HOST_D0_INFORM))
 			goto cleanup;
 		brcmf_dbg(PCIE, "Hot resume, continue....\n");
-		devinfo->state = BRCMFMAC_PCIE_STATE_UP;
 		brcmf_pcie_select_core(devinfo, BCMA_CORE_PCIE2);
 		brcmf_bus_change_state(bus, BRCMF_BUS_UP);
 		brcmf_pcie_intr_enable(devinfo);

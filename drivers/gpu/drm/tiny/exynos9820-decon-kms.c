@@ -9,6 +9,11 @@
 // and the window's shadow-update request; FRAME_START is vblank.
 // Disabling the CRTC hands the scanout back to S-Boot's framebuffer.
 //
+// With psr=1 (the default) the trigger is masked again once nothing wants a
+// frame: the panel then refreshes itself from its own RAM, and DECON, the
+// IDMA and the DSI link stop moving 9.8 MB a frame at 60 Hz. Every update,
+// and every vblank reference, unmasks it (DPU-SPEC.md 3.1, 3.4).
+//
 // DSIM0 is used only as a MIPI DSI host for panel commands, through its
 // command FIFO on the link S-Boot brought up. The panel (a child node) is
 // driven through a panel bridge; the DRM device registers once it attaches.
@@ -113,6 +118,12 @@ struct decon_kms {
 	unsigned int win;
 	int irq;
 
+	/* PSR: which frames the TE trigger still has to start (trig_lock) */
+	spinlock_t trig_lock;
+	unsigned int trig_frames;
+	bool trig_vblank;
+	bool trig_masked;
+
 	struct mipi_dsi_host dsi_host;
 	struct mutex dsi_lock;		/* one packet in the FIFO at a time */
 	bool registered;
@@ -124,9 +135,54 @@ struct decon_kms {
 	u32 boot_src_size;
 };
 
+static bool psr = true;
+module_param(psr, bool, 0644);
+MODULE_PARM_DESC(psr, "send frames only when the picture changes (default: 1)");
+
 static inline struct decon_kms *to_decon(struct drm_device *drm)
 {
 	return container_of(drm, struct decon_kms, drm);
+}
+
+static void rmw(void __iomem *base, u32 reg, u32 mask, u32 val)
+{
+	writel((readl(base + reg) & ~mask) | (val & mask), base + reg);
+}
+
+/*
+ * Let the next TE start a frame, and keep going for @frames of them. Two
+ * after an update: the first latches it, and the second is the vblank that
+ * drm_atomic_helper_wait_for_vblanks() may only start counting after the
+ * first one has already gone by.
+ */
+static void decon_trig_kick(struct decon_kms *dk, unsigned int frames)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&dk->trig_lock, flags);
+	dk->trig_frames = max(dk->trig_frames, frames);
+	if (dk->trig_masked) {
+		rmw(dk->decon, DECON_HW_SW_TRIG_CONTROL,
+		    DECON_HW_TRIG_MASK_DECON, 0);
+		dk->trig_masked = false;
+	}
+	spin_unlock_irqrestore(&dk->trig_lock, flags);
+}
+
+/* At FRAME_START: mask the trigger once no one wants the next frame. */
+static void decon_trig_idle(struct decon_kms *dk)
+{
+	spin_lock(&dk->trig_lock);
+	if (dk->trig_frames)
+		dk->trig_frames--;
+	if (READ_ONCE(psr) && !dk->trig_frames && !dk->trig_vblank &&
+	    !dk->trig_masked &&
+	    !readl(dk->decon + DECON_SHADOW_REG_UPDATE_REQ)) {
+		rmw(dk->decon, DECON_HW_SW_TRIG_CONTROL,
+		    DECON_HW_TRIG_MASK_DECON, DECON_HW_TRIG_MASK_DECON);
+		dk->trig_masked = true;
+	}
+	spin_unlock(&dk->trig_lock);
 }
 
 /* Point GF0 at a buffer and have DECON latch it at the next frame start. */
@@ -190,6 +246,8 @@ static void decon_pipe_update(struct drm_simple_display_pipe *pipe,
 			      FIELD_PREP(IDMA_IMG_FORMAT, fmt),
 			      (S10E_HEIGHT << 16) | (fb->pitches[0] / 4));
 	}
+	/* a damage-only commit (DirtyFB, fbdev) changes pixels in place */
+	decon_trig_kick(dk, 2);
 
 	event = crtc->state->event;
 	if (!event)
@@ -208,8 +266,18 @@ static void decon_pipe_enable(struct drm_simple_display_pipe *pipe,
 			      struct drm_crtc_state *crtc_state,
 			      struct drm_plane_state *plane_state)
 {
-	/* the pipeline is already running; only the buffer changes */
-	drm_crtc_vblank_on(&pipe->crtc);
+	/*
+	 * The pipeline is already running; only the buffer changes. Vblank
+	 * goes off as soon as no one holds it, so an idle screen sends nothing.
+	 * Without a hardware counter the count only moves on real frames,
+	 * which with PSR is what a vblank is.
+	 */
+	const struct drm_vblank_crtc_config config = {
+		.offdelay_ms = 5000,
+		.disable_immediate = true,
+	};
+
+	drm_crtc_vblank_on_config(&pipe->crtc, &config);
 }
 
 static void decon_pipe_disable(struct drm_simple_display_pipe *pipe)
@@ -225,15 +293,30 @@ static void decon_pipe_disable(struct drm_simple_display_pipe *pipe)
 	memset(dk->boot_fb, 0, S10E_WIDTH * S10E_HEIGHT * 4);
 	wmb();
 	decon_scanout(dk, dk->boot_base, dk->boot_in_con, dk->boot_src_size);
+	decon_trig_kick(dk, 2);
 }
 
+/* FRAME_START comes only with a frame, so wanting vblanks means frames */
 static int decon_pipe_enable_vblank(struct drm_simple_display_pipe *pipe)
 {
-	return 0;	/* FRAME_START runs at the TE rate regardless */
+	struct decon_kms *dk = to_decon(pipe->crtc.dev);
+	unsigned long flags;
+
+	spin_lock_irqsave(&dk->trig_lock, flags);
+	dk->trig_vblank = true;
+	spin_unlock_irqrestore(&dk->trig_lock, flags);
+	decon_trig_kick(dk, 1);
+	return 0;
 }
 
 static void decon_pipe_disable_vblank(struct drm_simple_display_pipe *pipe)
 {
+	struct decon_kms *dk = to_decon(pipe->crtc.dev);
+	unsigned long flags;
+
+	spin_lock_irqsave(&dk->trig_lock, flags);
+	dk->trig_vblank = false;
+	spin_unlock_irqrestore(&dk->trig_lock, flags);
 }
 
 static const struct drm_simple_display_pipe_funcs decon_pipe_funcs = {
@@ -347,11 +430,6 @@ static const s16 vgrfs_v_coef[9][4] = {
 	{ -27, 324, 234, -19 },
 	{ -23, 279, 279, -23 },
 };
-
-static void rmw(void __iomem *base, u32 reg, u32 mask, u32 val)
-{
-	writel((readl(base + reg) & ~mask) | (val & mask), base + reg);
-}
 
 static inline struct decon_kms *dp_pipe_to_decon(struct drm_simple_display_pipe *pipe)
 {
@@ -709,13 +787,16 @@ static irqreturn_t decon_irq(int irq, void *data)
 		return IRQ_NONE;
 	writel(pend, dk->decon + DECON_INTERRUPT_PENDING);
 
-	if (pend & DECON_INT_FRAME_START)
+	if (pend & DECON_INT_FRAME_START) {
 		drm_crtc_handle_vblank(&dk->pipe.crtc);
+		decon_trig_idle(dk);
+	}
 	return IRQ_HANDLED;
 }
 
 static const struct drm_mode_config_funcs decon_mode_config_funcs = {
-	.fb_create = drm_gem_fb_create,
+	/* front-buffer writers (fbdev, DirtyFB) must commit to get a frame */
+	.fb_create = drm_gem_fb_create_with_dirty,
 	.atomic_check = drm_atomic_helper_check,
 	.atomic_commit = drm_atomic_helper_commit,
 };
