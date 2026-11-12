@@ -1116,6 +1116,12 @@ static const unsigned long fsys0a_clk_regs[] __initconst = {
 	CLK_CON_GAT_GOUT_BLK_FSYS0A_UID_USB31DRD_IPCLKPORT_I_USBDPPHY_REF_SOC_PLL,
 	CLK_CON_GAT_GOUT_BLK_FSYS0A_UID_USB31DRD_IPCLKPORT_I_USBDPPHY_SCL_APB_PCLK,
 	CLK_CON_GAT_GOUT_BLK_FSYS0A_UID_USB31DRD_IPCLKPORT_I_USBPCS_APB_CLK,
+	/*
+	 * The Q-channels, as stock's save_sleep keeps them (DMYQCH_CON_USB31DRD_QCH_REF, 0x3000, is the USB PHY's
+	 * reference). Kept for that; no SoC sleep has yet been seen to change one of them (2026-11-09), so they are not
+	 * known to be why the SS PHY's LC PLL did not lock.
+	 */
+	0x3000, 0x3010, 0x3014, 0x3018, 0x3020, 0x3028, 0x302c, 0x3030,
 };
 
 /* List of parent clocks for muxes in CMU_FSYS0A */
@@ -1337,6 +1343,15 @@ static const unsigned long fsys1_clk_regs[] __initconst = {
 	CLK_CON_GAT_GOUT_BLK_FSYS1_UID_VGEN_LITE_FSYS1_IPCLKPORT_CLK,
 	CLK_CON_GAT_GOUT_BLK_FSYS1_UID_XIU_D_FSYS1_IPCLKPORT_ACLK,
 	CLK_CON_GAT_GOUT_BLK_FSYS1_UID_XIU_P_FSYS1_IPCLKPORT_ACLK,
+	/*
+	 * The Q-channels, as stock's save_sleep keeps them (DMYQCH_CON_PCIE_GEN2_QCH_SOCPLL, 0x3000, is the PCIe
+	 * GEN2 PHY's reference). Kept for that, but they were not why the Wi-Fi link did not train after a SoC sleep:
+	 * no sleep changed one of them, and the cause was PERST# held in pad retention (pcie-exynos9820.c, 2026-11-09).
+	 */
+	0x3000, 0x3004, 0x3010, 0x3014, 0x3018, 0x301c, 0x3020, 0x3024,
+	0x3028, 0x302c, 0x3030, 0x3034, 0x3038, 0x303c, 0x3040, 0x3044,
+	0x3048, 0x304c, 0x3050, 0x3054, 0x3058, 0x305c, 0x3060, 0x3064,
+	0x3068, 0x306c, 0x3070, 0x3074, 0x3078,
 };
 
 static const struct samsung_pll_clock fsys1_pll_clks[] __initconst = {

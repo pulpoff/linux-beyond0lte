@@ -78,6 +78,7 @@ struct s5k_data {
 	unsigned int n_global;
 	const struct s5k_mode *modes;
 	unsigned int n_modes;
+	unsigned int n_pd_modes;		/* the first modes, which send phase detection data on VC1 */
 	const struct s5k3p9_reg *post_mode;	/* after the mode table */
 	unsigned int n_post_mode;
 	bool dual_sync_master;			/* 0x0a70/0x0a72 before stream on */
@@ -184,6 +185,7 @@ static const struct s5k_data s5k2l4_data = {
 	.n_global = ARRAY_SIZE(s5k2l4_global),
 	.modes = s5k2l4_modes,
 	.n_modes = ARRAY_SIZE(s5k2l4_modes),
+	.n_pd_modes = 2,
 	.code = MEDIA_BUS_FMT_SGRBG10_1X10,
 	.stream_on = 0x0103,
 	.link_freqs = s5k2l4_link_freqs,
@@ -498,15 +500,37 @@ static int s5k3p9_enum_mbus_code(struct v4l2_subdev *sd, struct v4l2_subdev_stat
 	return 0;
 }
 
+/*
+ * The 2L4's full-size modes (4032x3024, 4032x2268) send its phase detection pixels on virtual channel 1, which
+ * exynos9820-csis does not filter yet: their frames come out black (4032x2268) or striped (4032x3024), with a
+ * flood of CSIS overflow interrupts. Until the CSIS drops VC1 they are not offered, and libcamera serves every size
+ * from the 2016x1134 and 1008x756 modes (a 4:3 picture is cut from 2016x1134). The selection rectangles still
+ * describe the whole pixel array. full_modes=1 offers them again, for work on the CSIS.
+ */
+static bool full_modes;
+module_param(full_modes, bool, 0444);
+MODULE_PARM_DESC(full_modes, "offer modes that send PD data on VC1 (the S5K2L4's 4032-wide ones; broken until the CSIS filters VC1)");
+
+/* the modes offered: all of them, or those after the PD ones */
+static const struct s5k_mode *s5k_modes(const struct s5k_data *d)
+{
+	return d->modes + (full_modes ? 0 : d->n_pd_modes);
+}
+
+static unsigned int s5k_n_modes(const struct s5k_data *d)
+{
+	return d->n_modes - (full_modes ? 0 : d->n_pd_modes);
+}
+
 static int s5k3p9_enum_frame_size(struct v4l2_subdev *sd, struct v4l2_subdev_state *state,
 				  struct v4l2_subdev_frame_size_enum *fse)
 {
 	struct s5k3p9 *s = to_s5k(sd);
 
-	if (fse->code != s->data->code || fse->index >= s->data->n_modes)
+	if (fse->code != s->data->code || fse->index >= s5k_n_modes(s->data))
 		return -EINVAL;
-	fse->min_width = fse->max_width = s->data->modes[fse->index].width;
-	fse->min_height = fse->max_height = s->data->modes[fse->index].height;
+	fse->min_width = fse->max_width = s5k_modes(s->data)[fse->index].width;
+	fse->min_height = fse->max_height = s5k_modes(s->data)[fse->index].height;
 	return 0;
 }
 
@@ -516,7 +540,7 @@ static int s5k3p9_set_fmt(struct v4l2_subdev *sd, struct v4l2_subdev_state *stat
 	struct s5k3p9 *s = to_s5k(sd);
 	const struct s5k_mode *m;
 
-	m = v4l2_find_nearest_size(s->data->modes, s->data->n_modes, width, height,
+	m = v4l2_find_nearest_size(s5k_modes(s->data), s5k_n_modes(s->data), width, height,
 				   fmt->format.width, fmt->format.height);
 	s5k3p9_fill_fmt(s, m, &fmt->format);
 	*v4l2_subdev_state_get_format(state, 0) = fmt->format;
@@ -635,7 +659,7 @@ static int s5k3p9_init_state(struct v4l2_subdev *sd, struct v4l2_subdev_state *s
 {
 	struct s5k3p9 *s = to_s5k(sd);
 
-	s5k3p9_fill_fmt(s, &s->data->modes[0], v4l2_subdev_state_get_format(state, 0));
+	s5k3p9_fill_fmt(s, s5k_modes(s->data), v4l2_subdev_state_get_format(state, 0));
 	return 0;
 }
 
@@ -678,7 +702,7 @@ static int s5k3p9_probe(struct i2c_client *client)
 		return -ENOMEM;
 	s->client = client;
 	s->data = of_device_get_match_data(dev);
-	s->mode = &s->data->modes[0];
+	s->mode = s5k_modes(s->data);
 
 	s->mclk = devm_clk_get(dev, NULL);
 	if (IS_ERR(s->mclk))

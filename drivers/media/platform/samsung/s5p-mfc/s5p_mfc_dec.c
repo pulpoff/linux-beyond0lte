@@ -1094,9 +1094,19 @@ static void s5p_mfc_stop_streaming(struct vb2_queue *q)
 		ctx->state ==  MFCINST_RUNNING) &&
 		dev->curr_ctx == ctx->num && dev->hw_lock) {
 		ctx->state = MFCINST_ABORT;
+		/*
+		 * The frame interrupt ends in try_run(), and while this context
+		 * still has its work bit (buffers queued on both sides) try_run()
+		 * picks it again and cleans its interrupt flags before this
+		 * waiter looks at them: the wait then always timed out with
+		 * int_type 0. ABORT is never ready to run, so drop the bit.
+		 * Any completion (frame, field, error) ends the wait.
+		 */
+		clear_work_bit(ctx);
 		spin_unlock_irqrestore(&dev->irqlock, flags);
-		s5p_mfc_wait_for_done_ctx(ctx,
-					S5P_MFC_R2H_CMD_FRAME_DONE_RET, 0);
+		if (!wait_event_timeout(ctx->queue, ctx->int_cond,
+				msecs_to_jiffies(MFC_INT_TIMEOUT)))
+			mfc_err("Timeout waiting for the running frame (stop)\n");
 		aborted = 1;
 		spin_lock_irqsave(&dev->irqlock, flags);
 	}
@@ -1120,6 +1130,9 @@ static void s5p_mfc_stop_streaming(struct vb2_queue *q)
 		s5p_mfc_cleanup_queue(&ctx->src_queue, &ctx->vq_src);
 		INIT_LIST_HEAD(&ctx->src_queue);
 		ctx->src_queue_cnt = 0;
+		/* The next buffer (after a seek) is new data: start at 0 */
+		ctx->consumed_stream = 0;
+		ctx->after_packed_pb = 0;
 	}
 	if (aborted)
 		ctx->state = MFCINST_RUNNING;

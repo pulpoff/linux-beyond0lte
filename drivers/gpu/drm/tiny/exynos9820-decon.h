@@ -7,6 +7,6 @@
 
 struct mipi_dsi_host;
 
-void exynos9820_decon_hold_frames(struct mipi_dsi_host *host, bool hold);
+unsigned int exynos9820_decon_hold_frames(struct mipi_dsi_host *host, bool hold);
 
 #endif

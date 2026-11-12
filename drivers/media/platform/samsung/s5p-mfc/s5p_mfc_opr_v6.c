@@ -483,6 +483,50 @@ static int calc_plane(int width, int height)
 		(mbY * S5P_FIMV_NUM_PIXELS_IN_MB_ROW_V6);
 }
 
+/*
+ * Grow the decoder's capture planes to whole lines of one common height
+ * and report that height. The firmware sizes (macroblock rows, rounded to
+ * an even count for small frames, plus the v8+ 64 bytes) are not a whole
+ * number of lines: 1080p came out as 1920 * 1088 + 64 luma bytes. Userspace
+ * that sizes a frame from bytesperline and the format height then
+ * disagrees with the buffer length. GStreamer's v4l2 pool does, and on a
+ * flushing seek it throws away every queued capture buffer of the "wrong"
+ * size while it holds its pool lock, which deadlocks the seek. The planes
+ * only get bigger here, so the firmware minimums still hold.
+ */
+static void s5p_mfc_dec_planes_to_lines(struct s5p_mfc_ctx *ctx)
+{
+	bool three_planes;
+	unsigned int lines, c_lines;
+
+	switch (ctx->dst_fmt->fourcc) {
+	case V4L2_PIX_FMT_NV12M:
+	case V4L2_PIX_FMT_NV21M:
+		three_planes = false;
+		break;
+	case V4L2_PIX_FMT_YUV420M:
+	case V4L2_PIX_FMT_YVU420M:
+		three_planes = true;
+		break;
+	default:
+		return;
+	}
+
+	lines = max_t(unsigned int, ctx->buf_height,
+		      DIV_ROUND_UP(ctx->luma_size, ctx->stride[0]));
+	c_lines = DIV_ROUND_UP(ctx->chroma_size, ctx->stride[1]);
+	if (three_planes)
+		c_lines = max_t(unsigned int, c_lines,
+				DIV_ROUND_UP(ctx->chroma_size_1, ctx->stride[2]));
+	lines = ALIGN(max(lines, 2 * c_lines), 2);
+
+	ctx->buf_height = lines;
+	ctx->luma_size = ctx->stride[0] * lines;
+	ctx->chroma_size = ctx->stride[1] * (lines / 2);
+	if (three_planes)
+		ctx->chroma_size_1 = ctx->stride[2] * (lines / 2);
+}
+
 static void s5p_mfc_dec_calc_dpb_size_v6(struct s5p_mfc_ctx *ctx)
 {
 	struct s5p_mfc_dev *dev = ctx->dev;
@@ -518,6 +562,8 @@ static void s5p_mfc_dec_calc_dpb_size_v6(struct s5p_mfc_ctx *ctx)
 		ctx->chroma_size += S5P_FIMV_D_ALIGN_PLANE_SIZE_V8;
 		ctx->chroma_size_1 += S5P_FIMV_D_ALIGN_PLANE_SIZE_V8;
 	}
+
+	s5p_mfc_dec_planes_to_lines(ctx);
 
 	if (ctx->codec_mode == S5P_MFC_CODEC_H264_DEC ||
 			ctx->codec_mode == S5P_MFC_CODEC_H264_MVC_DEC) {

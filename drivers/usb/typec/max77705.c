@@ -244,6 +244,18 @@ enum max77705_ccistat {
  */
 #define MAX77705_ILIM_CDP_UA		1500000
 #define MAX77705_ILIM_NOPD_MAX_UA	1800000
+/*
+ * A source that cannot give what it advertises drops out under it: a PC's USB 2.0 port behind an A-to-C cable whose
+ * pull-up claims Type-C 3.0 A cut out at anything over 1.3 A, and the charger flapped between charging and not, a
+ * dozen interrupts a second (2026-11-08). Stock steps the input down 100 mA on each AICL interrupt; here it steps
+ * down 100 mA whenever the charger changes BACKOFF_EVENTS times within BACKOFF_WINDOW_MS, to the USB port's 500 mA at
+ * the least, and stays there until the cable is pulled. A steady charger changes a few times an hour.
+ */
+#define MAX77705_ILIM_BACKOFF_UA	100000
+#define MAX77705_BACKOFF_EVENTS		4
+#define MAX77705_BACKOFF_WINDOW_MS	5000
+/* after a new limit: the events of the charger settling on it */
+#define MAX77705_ILIM_SETTLE_MS		2000
 #define MAX77705_PD_MAX_REQUESTS	3
 #define MAX77705_PD_RETRY_MS		500
 #define MAX77705_PD_BACKOFF_MS		60000
@@ -293,6 +305,9 @@ struct max77705_usbc {
 	struct delayed_work vbus_work;
 	struct delayed_work recover_work;
 	struct delayed_work dr_swap_work;
+	struct work_struct backoff_work;
+	struct notifier_block chg_nb;
+	atomic_t chg_events;		/* the charger's changes, counted by chg_nb */
 
 	/* serializes the mailbox and all port state below */
 	struct mutex lock;
@@ -341,6 +356,10 @@ struct max77705_usbc {
 
 	int ilim_base_ua;
 	int nopd_ilim_ua;	/* set without a PD contract, 0 = not yet */
+	int nopd_cap_ua;	/* where the source dropped out below it, 0 = it never did */
+	unsigned long nopd_settled;	/* jiffies: the charger's changes count from then */
+	unsigned long backoff_since;	/* jiffies: the start of the counting window */
+	unsigned int backoff_events;
 	int voltage_uv;
 	int current_ua;
 
@@ -845,14 +864,58 @@ static void max77705_usbc_nopd_ilim(struct max77705_usbc *u)
 		ua = bc_ua;
 		why = bc_why;
 	}
+	if (u->nopd_cap_ua && ua > u->nopd_cap_ua) {
+		ua = u->nopd_cap_ua;
+		why = "the source dropped out above it";
+	}
 
 	if (ua == u->nopd_ilim_ua)
 		return;
 	if (!max77705_usbc_set_ilim(u, ua)) {
 		u->nopd_ilim_ua = ua;
+		u->nopd_settled = jiffies + msecs_to_jiffies(MAX77705_ILIM_SETTLE_MS);
+		u->backoff_events = 0;
 		dev_info(u->dev, "no PD contract: %s, input limit %d mA\n",
 			 why, ua / 1000);
 	}
+}
+
+/* every change the charger reports (its CHGIN and AICL interrupts among them), from the power supply core's work */
+static int max77705_usbc_chg_notify(struct notifier_block *nb, unsigned long event, void *data)
+{
+	struct max77705_usbc *u = container_of(nb, struct max77705_usbc, chg_nb);
+
+	if (event != PSY_EVENT_PROP_CHANGED || data != u->chg_psy)
+		return NOTIFY_DONE;
+	atomic_inc(&u->chg_events);
+	queue_work(u->wq, &u->backoff_work);
+	return NOTIFY_OK;
+}
+
+/* the input limit 100 mA down while the source keeps dropping out under it, without a PD contract only */
+static void max77705_usbc_backoff_work(struct work_struct *work)
+{
+	struct max77705_usbc *u = container_of(work, struct max77705_usbc, backoff_work);
+	unsigned int n = atomic_xchg(&u->chg_events, 0);
+	int ua;
+
+	guard(mutex)(&u->lock);
+	if (u->ccstat != MAX77705_CC_SINK || u->pd_contract || u->nopd_ilim_ua <= MAX77705_ILIM_SAFE_UA ||
+	    time_before(jiffies, u->nopd_settled))
+		return;
+	if (!u->backoff_events ||
+	    time_after(jiffies, u->backoff_since + msecs_to_jiffies(MAX77705_BACKOFF_WINDOW_MS))) {
+		u->backoff_since = jiffies;
+		u->backoff_events = 0;
+	}
+	u->backoff_events += n;
+	if (u->backoff_events < MAX77705_BACKOFF_EVENTS)
+		return;
+
+	ua = max(u->nopd_ilim_ua - MAX77705_ILIM_BACKOFF_UA, MAX77705_ILIM_SAFE_UA);
+	dev_info(u->dev, "the source drops out at %d mA\n", u->nopd_ilim_ua / 1000);
+	u->nopd_cap_ua = ua;
+	max77705_usbc_nopd_ilim(u);
 }
 
 static void max77705_usbc_set_orientation(struct max77705_usbc *u,
@@ -880,6 +943,8 @@ static void max77705_usbc_pd_reset(struct max77705_usbc *u)
 	cancel_delayed_work(&u->pd_retry_work);
 	u->pd_contract = false;
 	u->nopd_ilim_ua = 0;
+	u->nopd_cap_ua = 0;
+	u->backoff_events = 0;
 	u->nr_src_pdos = 0;
 	u->sel_pos = 0;
 	u->req_pos = 0;
@@ -1962,6 +2027,9 @@ static void max77705_usbc_teardown(void *data)
 {
 	struct max77705_usbc *u = data;
 
+	if (u->chg_psy)
+		power_supply_unreg_notifier(&u->chg_nb);
+	cancel_work_sync(&u->backoff_work);
 	cancel_work_sync(&u->work);
 	cancel_delayed_work_sync(&u->pd_retry_work);
 	cancel_delayed_work_sync(&u->vbus_work);
@@ -2006,6 +2074,7 @@ static int max77705_usbc_probe(struct i2c_client *client)
 	INIT_DELAYED_WORK(&u->vbus_work, max77705_usbc_vbus_work);
 	INIT_DELAYED_WORK(&u->recover_work, max77705_usbc_recover_work);
 	INIT_DELAYED_WORK(&u->dr_swap_work, max77705_usbc_dr_swap_work);
+	INIT_WORK(&u->backoff_work, max77705_usbc_backoff_work);
 	INIT_KFIFO(u->ev_fifo);
 
 	u->regmap = devm_regmap_init_i2c(client, &max77705_usbc_regmap_config);
@@ -2107,6 +2176,14 @@ static int max77705_usbc_probe(struct i2c_client *client)
 	ret = devm_add_action_or_reset(dev, max77705_usbc_teardown, u);
 	if (ret)
 		return ret;
+
+	/* after the teardown is in place: it unregisters this */
+	if (u->chg_psy) {
+		u->chg_nb.notifier_call = max77705_usbc_chg_notify;
+		ret = power_supply_reg_notifier(&u->chg_nb);
+		if (ret)
+			dev_warn(dev, "no input back-off: notifier (%d)\n", ret);
+	}
 
 	/*
 	 * Initialize by polling with the USBC source still masked at the top

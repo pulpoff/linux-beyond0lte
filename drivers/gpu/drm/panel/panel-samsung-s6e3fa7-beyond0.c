@@ -187,7 +187,8 @@ static void beyond0_lpm_enter(struct mipi_dsi_multi_context *ctx, unsigned int i
 	mipi_dsi_dcs_write_seq_multi(ctx, 0xfe, 0x24);
 	mipi_dsi_dcs_write_seq_multi(ctx, 0x76, 0x08, 0x10, 0x84, 0x38, 0x08, 0xe8);
 	key3_off(ctx);
-	exynos9820_decon_hold_frames(ctx->dsi->host, false);
+	if (exynos9820_decon_hold_frames(ctx->dsi->host, false))
+		dev_warn(&ctx->dsi->dev, "a frame got into ENTER_AOD\n");
 }
 
 static void beyond0_lpm_exit(struct mipi_dsi_multi_context *ctx)
@@ -234,6 +235,7 @@ static const u8 beyond0_self_move_1s[] = {
 static void beyond0_side_ram(struct beyond0_panel *bp, struct mipi_dsi_multi_context *ctx, u8 region,
 			     const u8 *data, size_t len)
 {
+	unsigned int attempt;
 	size_t off, n;
 
 	/*
@@ -248,20 +250,34 @@ static void beyond0_side_ram(struct beyond0_panel *bp, struct mipi_dsi_multi_con
 	key2_off(ctx);
 	mipi_dsi_msleep(ctx, SIDE_RAM_SETTLE_MS);
 
-	/* and no frame inside it: on the first AOD after a boot, with the shell drawing, an upload kept only its
-	 * first third (2026-11-08) */
-	exynos9820_decon_hold_frames(bp->dsi->host, true);
-	key2_on(ctx);
-	mipi_dsi_dcs_write_seq_multi(ctx, 0x77, 0x00, 0x00);	/* stock's INIT_SIDE_RAM */
-	mipi_dsi_dcs_write_buffer_multi(ctx, (const u8 []){ 0x75, region }, 2);
-	for (off = 0; off < len && !ctx->accum_err; off += n) {
-		n = min_t(size_t, len - off, SIDE_RAM_CHUNK);
-		bp->side_buf[0] = off ? 0x5c : 0x4c;
-		memcpy(bp->side_buf + 1, data + off, n);
-		mipi_dsi_dcs_write_buffer_multi(ctx, bp->side_buf, n + 1);
+	/*
+	 * and no frame inside it: on the first AOD after a boot, with the shell drawing, an upload kept only its
+	 * first third (2026-11-08). The first AOD of the next boot (22:23, the owner pressing the power key every
+	 * second or so) still got noise for hands, which the same upload sent again 7 minutes later cured: the hold
+	 * did not wait for the frame under way then (its FRAME_DONE was never seen, see decon_irq()). So the upload
+	 * is logged, and sent once more if a frame reached the link inside it after all.
+	 */
+	for (attempt = 1; ; attempt++) {
+		ktime_t start = ktime_get();
+		unsigned int frames;
+
+		exynos9820_decon_hold_frames(bp->dsi->host, true);
+		key2_on(ctx);
+		mipi_dsi_dcs_write_seq_multi(ctx, 0x77, 0x00, 0x00);	/* stock's INIT_SIDE_RAM */
+		mipi_dsi_dcs_write_buffer_multi(ctx, (const u8 []){ 0x75, region }, 2);
+		for (off = 0; off < len && !ctx->accum_err; off += n) {
+			n = min_t(size_t, len - off, SIDE_RAM_CHUNK);
+			bp->side_buf[0] = off ? 0x5c : 0x4c;
+			memcpy(bp->side_buf + 1, data + off, n);
+			mipi_dsi_dcs_write_buffer_multi(ctx, bp->side_buf, n + 1);
+		}
+		key2_off(ctx);
+		frames = exynos9820_decon_hold_frames(bp->dsi->host, false);
+		dev_info(&bp->dsi->dev, "side RAM %02x: %zu bytes in %lld ms (attempt %u, %u frames got in, error %d)\n",
+			 region, len, ktime_ms_delta(ktime_get(), start), attempt, frames, ctx->accum_err);
+		if (!frames || ctx->accum_err || attempt == 2)
+			break;
 	}
-	key2_off(ctx);
-	exynos9820_decon_hold_frames(bp->dsi->host, false);
 }
 
 /*

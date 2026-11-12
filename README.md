@@ -15,24 +15,24 @@ Use the `main` branch; every update is one commit of the whole tree, this README
 New in this version
 ===================
 
-* **Linux 7.2.15.** 7.2.14 and 7.2.15 change only core code (io_uring, keys, signals and exit, tracing, the
-  scheduler, Bluetooth, SMB, exec), none of the S10e's drivers.
-* **Suspend to idle is steadier.**
-  * A sleep within a few seconds of a sound crashed the phone: the sound block's power domain went off
-    under a running ABOX, and the secure-world restore after the failed power-off was an SError. ABOX now
-    refuses a system sleep while it is active, for a few seconds after each sound. This is a stopgap (see
-    Sound).
-  * A video playing through an s2idle left the MFC dead until the player closed. Fixed (see Video).
-  * The CS47L93 codec never powered down, and every s2idle disabled its core supply a second time. Fixed
-    (see Sound).
-  * While the phone sleeps, Wi-Fi is in strict power save (PM_MAX): 203 mA against 214 mA on battery,
-    mostly asleep.
-  * The sensor hub's resume recovery could poll without end, so the phone never slept and ran hot. Fixed.
-* **The SoC's own sleep state is in the kernel, but not used yet** (`exynos9820-sleep`, off by default). It
-  drew 78 mA, against about 190 mA in s2idle. Entering it can take up to 8 s, and Wi-Fi does not come back
-  from it without a driver reload. See Suspend.
-* **Rear flash LED** (torch and flash) and **NFC** drivers. Their device tree nodes are not yet in
-  `mobian/uboot/`.
+* **The wide camera takes 4:3 photos again.** The S5K2L4's full-size modes (4032x3024, 4032x2268) send its
+  phase detection pixels on CSI-2 virtual channel 1, which the CSIS driver does not filter yet: their frames
+  came out black or striped, and a 4:3 photo landed on 4032x2268. The sensor driver now offers them only with
+  `s5k3p9.full_modes=1`, so libcamera serves every size from the 2016x1134 and 1008x756 modes; a 4:3 photo is
+  1400x1050 until the CSIS drops VC1.
+* **Video:** a STREAMOFF no longer waits out its timeout (the frame interrupt's flags were cleared before the
+  wait looked at them), and the decoder's capture planes are whole lines of one height. 1080p was 1920 x 1088 +
+  64 luma bytes, and GStreamer's v4l2 pool threw every queued buffer away on a flushing seek.
+* **Always On Display:** an upload of the clock hands that a frame cut short is sent again, and the display
+  link's error bits (DSIM underrun, DECON timeout) are logged and cleared.
+* **Charging:** a source that drops out under the current it advertises (a PC's USB 2.0 port behind a cable
+  claiming Type-C 3.0 A) no longer makes the charger flap a dozen times a second: the input steps down 100 mA at
+  a time, to 500 mA at the least, until the cable is pulled.
+* **SoC sleep (still off):** after the PERST# brcmfmac keeps the Wi-Fi firmware when it is still running,
+  instead of reloading it (about 10 s and the association).
+
+The previous update, Linux 7.2.15 with a steadier suspend to idle and the SoC's own sleep state, is commit
+5b7e5133 in this branch's history.
 
 What works
 ==========
@@ -47,8 +47,8 @@ What works
 | Sound | speaker and microphones through the CS47L93 codec and CS35L41 amps; media playback drives ABOX without its DSP firmware, calls use it; a call's downlink and uplink as PCMs of their own, at the rates the modem's voice path uses, for a GSM gateway; a system sleep waits until ABOX has been idle for a few seconds (a stopgap, see Sound below) |
 | Modem | Shannon CP boots from the phone's own `radio` partition; voice calls with audio, SMS, LTE data (`rmnet0`, ~47/34 Mbit/s), APN from the SIM |
 | Sensors | accelerometer (screen rotation), ambient light, proximity and compass through the BCM4775 sensor hub, through suspend and resume |
-| Cameras | rear wide S5K2L4 with AK7375 autofocus, rear ultra-wide S5K3P9, front S5K3J1, through a new CSIS/write-DMA driver and libcamera's software ISP (tuning in `mobian/camera/`) |
-| Video | MFC hardware decode: H.264, HEVC, VP9; playback carries on through an s2idle |
+| Cameras | rear wide S5K2L4 with AK7375 autofocus, rear ultra-wide S5K3P9, front S5K3J1, through a new CSIS/write-DMA driver and libcamera's software ISP (tuning in `mobian/camera/`); the wide camera's full-size modes are off for now, so its photos are cut from 2016x1134 |
+| Video | MFC hardware decode: H.264, HEVC, VP9; playback carries on through an s2idle; seeking keeps the queued frames |
 | DisplayPort | USB-C DP alt mode to HDMI docks: 1080p60/120 with audio, a second CRTC on DECON2, HDMI CEC through docks that tunnel it |
 | USB | device mode (networking), host mode with hubs, USB 3 SuperSpeed through docks, Type-C orientation from the MAX77705 |
 | Battery | MAX77705 charger and fuel gauge; Qi wireless charging at 5 V through the charger's WCIN input; on a 0.5 A USB port it shows as charging, as Android does; without USB PD the input limit follows the Type-C current and BC1.2 detection (up to 1.8 A), as stock does |
@@ -60,7 +60,7 @@ What works
 | RTC | S2MPS19 real-time clock |
 | Buttons | power, volume, haptics |
 
-Not done: GPS, the fingerprint sensor (S-Boot locks its SPI bus to the secure world, so Linux cannot reach it
+Not done: the wide camera's full-resolution modes (the CSIS does not filter their phase detection data yet), GPS, the fingerprint sensor (S-Boot locks its SPI bus to the secure world, so Linux cannot reach it
 at all), NFC beyond the driver probing, VoLTE, IPv6 on mobile data, the front camera's tuning, everyday use of
 the SoC's own sleep state (s2idle keeps the SoC's rails up, so the phone still draws about 0.7 W asleep, far
 from Android's standby), CPU idle states beyond WFI (C2 hangs the SoC), the display link's power-down in the
@@ -193,8 +193,9 @@ On top of chiffathefox's Exynos 9820 tree (clocks, pinctrl, UFS, ACPM, the PMIC,
   * Entering it takes up to 8 s, between the file system sync and the freezing of userspace (s2idle: under
     0.7 s). The cause is not found yet. Power key presses in that window are lost.
   * The modem's mailbox wakes it every 10 s or so.
-  * brcmfmac does not get the Wi-Fi firmware back after the PERST#: Wi-Fi needs a driver reload after each
-    SoC sleep, which takes about 10 s. The sensor hub's driver has to be unbound and bound again too.
+  * After the PERST# brcmfmac keeps the Wi-Fi firmware if it still runs (the word it posted at the top of its
+    RAM is still its shared area's address) instead of a reload of about 10 s; after long sleeps Wi-Fi still
+    does not come back. The sensor hub's driver has to be unbound and bound again.
   * Sound after a SoC sleep needs the stock power-down settings of the amps' and codec's reset pins in the
     device tree; `mobian/uboot/` does not have them yet, and without them the amps fail after the sleep.
 * **Watchdog:** `s3c2410_wdt` knows the 9820's CLUSTER0 watchdog; U-Boot's DT has the node, and systemd feeds it.
@@ -220,7 +221,9 @@ On top of chiffathefox's Exynos 9820 tree (clocks, pinctrl, UFS, ACPM, the PMIC,
 * **Video:** MFC v12 decode in s5p-mfc. After a system sleep the wakeup path writes MFC_CLOCK_OFF (0x7120)
   = 0 with RISC_ON, as the init does on v10 and later (and = 1 after the sleep command, as the vendor driver
   does): an s2idle in the middle of a video left the MFC dead until the last instance closed. A real-time
-  decode with an s2idle in it now plays through.
+  decode with an s2idle in it now plays through. Waiting for ABORT at a STREAMOFF drops the context's work bit,
+  so try_run() no longer clears the interrupt flags first, and the capture planes are grown to whole lines of
+  one height that is also reported (GStreamer's v4l2 pool sizes frames from bytesperline and the height).
 * **Flash LED:** `drivers/leds/flash/leds-s2mpb02.c`, the S2MPB02's flash LED as a flash class LED
   (`white:flash`): torch through its brightness (12 steps of 20 mA, up to 240 mA), flash through `flash_strobe`
   (150-1250 mA, up to 1 s), the ceilings Samsung's kernel uses on this board. It is an MFD cell of the s2mpb02
@@ -234,6 +237,8 @@ On top of chiffathefox's Exynos 9820 tree (clocks, pinctrl, UFS, ACPM, the PMIC,
   DMA, as a V4L2 capture device), `drivers/media/i2c/s5k3p9.c` (data-driven: S5K2L4, S5K3P9 and S5K3J1, with
   register tables), AK7375 changes for the wide camera's lens (powered only while the camera streams), the S2MPB02/S2MPB03 camera PMICs, and CMU_ISPPRE.
   libcamera's simple pipeline and software ISP do the rest (`mobian/camera/libcamera-0.7.2-s10e.patch`).
+  The S5K2L4's 4032-wide modes carry phase detection data on virtual channel 1, which the CSIS does not drop
+  yet, so `s5k3p9` offers them only with `full_modes=1`; the selection rectangles still describe the whole array.
 * **DisplayPort:** `drivers/gpu/drm/tiny/exynos9820-dp.c` (link controller, AUX, EDID, training, CEC over AUX)
   as a bridge on a second CRTC (DECON2) in `exynos9820-decon-kms.c`; DP alt mode and HPD in `max77705.c`.
 * **USB hubs:** dwc3 on the 9820 resets GFLADJ with REFCLK_LPM_SEL set while no 24 MHz reference is there, so the
@@ -243,7 +248,9 @@ On top of chiffathefox's Exynos 9820 tree (clocks, pinctrl, UFS, ACPM, the PMIC,
   as online). Without a PD contract the input limit is the Type-C current the source advertises or what the
   chip's BC1.2 detection found (a charging port 1.5 A, a dedicated charger 1.8 A), as stock's cable table has it.
   A supplied battery that is not full reports Charging even while a 0.5 A port cannot keep up
-  with the screen (`max17042_battery.supplied_is_charging`), as Android shows "charging slowly". S2MPS19 RTC
+  with the screen (`max17042_battery.supplied_is_charging`), as Android shows "charging slowly". When the
+  charger changes state too often in a short window the input limit steps down 100 mA (to 500 mA at the least)
+  until the cable is pulled: stock does this on each AICL interrupt. S2MPS19 RTC
   and 32 kHz clock over ACPM; Exynos 9820 PMU and power domains.
 
 Firmware

@@ -668,8 +668,13 @@ static irqreturn_t s5p_mfc_irq(int irq, void *priv)
 	mfc_debug(1, "Int reason: %d (err: %08x)\n", reason, err);
 	switch (reason) {
 	case S5P_MFC_R2H_CMD_ERR_RET:
-		/* An error has occurred */
-		if (ctx->state == MFCINST_RUNNING &&
+		/*
+		 * An error has occurred. A warning on the frame a STREAMOFF is
+		 * waiting for (ABORT) is still just a decoded frame.
+		 */
+		if ((ctx->state == MFCINST_RUNNING ||
+		     (ctx->state == MFCINST_ABORT &&
+		      ctx->type == MFCINST_DECODER)) &&
 			(s5p_mfc_hw_call(dev->mfc_ops, err_dec, err) >=
 				dev->warn_start ||
 				err == S5P_FIMV_ERR_NO_VALID_SEQ_HDR ||

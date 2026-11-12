@@ -2846,6 +2846,26 @@ static int brcmf_pcie_pm_enter_D3(struct device *dev)
 }
 
 
+/*
+ * A SoC sleep on the Exynos 9820 takes the link down with PERST# (stock's exynos_pcie_poweroff): that resets the
+ * dongle's PCIe core and the BAR0 window, so intmask reads 0, but WL_REG_ON stays on and the firmware runs on,
+ * still associated. Stock dhd then only points the windows back and says host ready; reloading the firmware cost
+ * ~10 s and the association. The firmware is alive if the word it posted at the top of its RAM at boot is still
+ * the address of its shared area.
+ */
+static bool brcmf_pcie_alive_after_perst(struct brcmf_pciedev_info *devinfo)
+{
+	u32 posted;
+
+	if (!devinfo->shared.tcm_base_address)
+		return false;
+
+	posted = brcmf_pcie_read_ram32(devinfo, devinfo->ci->ramsize - 4);
+	dev_info(&devinfo->pdev->dev, "after PERST#: shared area at %08x, firmware %s\n", posted,
+		 posted == devinfo->shared.tcm_base_address ? "running" : "gone");
+	return posted == devinfo->shared.tcm_base_address;
+}
+
 static int brcmf_pcie_pm_leave_D3(struct device *dev)
 {
 	struct brcmf_pciedev_info *devinfo;
@@ -2862,8 +2882,20 @@ static int brcmf_pcie_pm_leave_D3(struct device *dev)
 	if (devinfo->wake_irq > 0 && atomic_xchg(&devinfo->wake_armed, 0))
 		disable_irq(devinfo->wake_irq);
 
+	/*
+	 * After PERST# the BAR0 window points at chipcommon again, whose register at intmask's offset is not 0: read
+	 * through it, a dongle the RC had reset looked "up", and every doorbell then went to chipcommon (no answer to
+	 * any command, 2026-11-09). So the PCIe2 core first, and the BAR1 window's size as brcmf_pcie_attach() sets it;
+	 * without a PERST# both are already so.
+	 */
+	brcmf_pcie_select_core(devinfo, BCMA_CORE_PCIE2);
+	brcmf_pcie_write_reg32(devinfo, BRCMF_PCIE_PCIE2REG_CONFIGADDR, 0x4e0);
+	brcmf_pcie_write_reg32(devinfo, BRCMF_PCIE_PCIE2REG_CONFIGDATA,
+			       brcmf_pcie_read_reg32(devinfo, BRCMF_PCIE_PCIE2REG_CONFIGDATA));
+
 	/* Check if device is still up and running, if so we are ready */
-	if (brcmf_pcie_read_reg32(devinfo, devinfo->reginfo->intmask) != 0) {
+	if (brcmf_pcie_read_reg32(devinfo, devinfo->reginfo->intmask) != 0 ||
+	    brcmf_pcie_alive_after_perst(devinfo)) {
 		brcmf_dbg(PCIE, "Try to wakeup device....\n");
 		/* a ring's doorbell only rings while the bus is up */
 		devinfo->state = BRCMFMAC_PCIE_STATE_UP;

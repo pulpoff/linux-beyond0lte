@@ -22,6 +22,7 @@
 
 #include <linux/aperture.h>
 #include <linux/bitfield.h>
+#include <linux/delay.h>
 #include <linux/dma-mapping.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
@@ -33,12 +34,14 @@
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
+#include <linux/seq_file.h>
 
 #include <drm/clients/drm_client_setup.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_bridge.h>
 #include <drm/drm_bridge_connector.h>
 #include <drm/drm_connector.h>
+#include <drm/drm_debugfs.h>
 #include <drm/drm_drv.h>
 #include <drm/drm_fb_dma_helper.h>
 #include <drm/drm_fbdev_dma.h>
@@ -71,6 +74,8 @@
 #define DECON_HW_SW_TRIG_CONTROL	0x0070
 #define DECON_HW_TRIG_EN		BIT(0)
 #define DECON_HW_TRIG_MASK_DECON	BIT(4)
+#define DECON_HW_TE_CNT			0x0078	/* TE pulses from the panel, both halves */
+#define DECON_FRAME_COUNT		0x02a0
 #define DECON_BLENDER_BG_IMAGE_SIZE_0	0x0200
 #define DECON_DATA_PATH_CONTROL_0	0x0214
 #define DECON_DATA_PATH_CONTROL_1	0x0218
@@ -88,6 +93,7 @@
 /* DSIM0 command FIFO */
 #define DSIM_PKTHDR			0x0058
 #define DSIM_PAYLOAD			0x005c
+#define DSIM_RXFIFO			0x0060
 #define DSIM_FIFOCTRL			0x0068
 #define DSIM_FULL_PH_SFR		BIT(11)
 #define DSIM_EMPTY_PH_SFR		BIT(10)
@@ -126,12 +132,12 @@ struct decon_kms {
 	bool trig_masked;
 	/* the panel's command sequence under way: no frame starts (trig_lock) */
 	bool trig_held;
-	/* between FRAME_START and FRAME_DONE (trig_lock), frame_wq when it ends */
-	bool in_frame;
-	wait_queue_head_t frame_wq;
+	/* frame interrupts that came anyway, since the hold took effect (trig_lock) */
+	unsigned int held_frames;
 
 	struct mipi_dsi_host dsi_host;
 	struct mutex dsi_lock;		/* one packet in the FIFO at a time */
+	bool stuck_dumped;		/* the registers of the first stuck FIFO are in the log (dsi_lock) */
 	bool registered;
 
 	/* what S-Boot was scanning out, restored (blacked) on disable */
@@ -356,6 +362,7 @@ static const u32 decon_formats[] = {
 
 #define DECON_GC_TEN_BPC		BIT(20)
 #define DECON_GC_CMD_MODE		BIT(8)
+#define DECON_GC_IDLE_STATUS		BIT(5)
 #define DECON_GC_RUN_STATUS		BIT(4)
 #define DECON_GC_EN			BIT(1)
 #define DECON_GC_EN_F			BIT(0)
@@ -782,6 +789,29 @@ static int decon_dp_init(struct decon_kms *dk)
 	return devm_request_irq(dev, dk->dp_irq, decon2_irq, 0, "decon2", dk);
 }
 
+/*
+ * The link's error bits, logged and cleared: DSIM's (the vendor driver counts underruns) and DECON's extra
+ * interrupt causes (it calls BUG() on a timeout). Neither has an interrupt of its own here, so they are read at
+ * each frame start and around each held command sequence. After a hand upload sent in the middle of a frame
+ * (2026-11-08) DSIM had UNDER_RUN and ABNRMAL_CMD_ST, DECON TIME_OUT, and no frame started again.
+ */
+#define DSIM_INTSRC			0x0050
+#define DSIM_INTSRC_ERRORS		(BIT(27) | GENMASK(23, 19))	/* PH overflow, invalid SFR, abnormal
+								   command, LPRX/BTA timeouts, underrun */
+#define DECON_EXTRA_ERRORS		(BIT(8) | BIT(4))		/* resource conflict, timeout */
+
+static void decon_check_errors(struct decon_kms *dk, const char *when)
+{
+	u32 dsim = readl(dk->dsim + DSIM_INTSRC) & DSIM_INTSRC_ERRORS;
+	u32 extra = readl(dk->decon + DECON_EXTRA_INT_PENDING) & DECON_EXTRA_ERRORS;
+
+	if (!dsim && !extra)
+		return;
+	writel(dsim, dk->dsim + DSIM_INTSRC);
+	writel(extra, dk->decon + DECON_EXTRA_INT_PENDING);
+	dev_warn_ratelimited(dk->drm.dev, "link errors %s: DSIM 0x%08x, DECON 0x%03x\n", when, dsim, extra);
+}
+
 static irqreturn_t decon_irq(int irq, void *data)
 {
 	struct decon_kms *dk = data;
@@ -789,21 +819,24 @@ static irqreturn_t decon_irq(int irq, void *data)
 		   (DECON_INT_FRAME_START | DECON_INT_FRAME_DONE |
 		    DECON_INT_EXTRA);
 
-	if (!pend)
+	/*
+	 * The line is FRAME_START's alone (SPI 183; FRAME_DONE and EXTRA have 184 and 189, not wired here), so the
+	 * other two bits are only cleared along with it, and whether a frame is running is DECON's own idle status
+	 * (decon_frame_running()). Until 2026-11-08 the FRAME_DONE cleared here, always the frame before's, was
+	 * taken for this one's: a hold never waited for the frame under way.
+	 */
+	if (!(pend & DECON_INT_FRAME_START))
 		return IRQ_NONE;
 	writel(pend, dk->decon + DECON_INTERRUPT_PENDING);
 
-	if (pend & DECON_INT_FRAME_START) {
-		drm_crtc_handle_vblank(&dk->pipe.crtc);
-		decon_trig_idle(dk);
-	}
-	if (pend & (DECON_INT_FRAME_START | DECON_INT_FRAME_DONE)) {
-		spin_lock(&dk->trig_lock);
-		dk->in_frame = !(pend & DECON_INT_FRAME_DONE);
-		spin_unlock(&dk->trig_lock);
-		if (pend & DECON_INT_FRAME_DONE)
-			wake_up(&dk->frame_wq);
-	}
+	drm_crtc_handle_vblank(&dk->pipe.crtc);
+	decon_trig_idle(dk);
+	decon_check_errors(dk, "at a frame start");
+
+	spin_lock(&dk->trig_lock);
+	if (dk->trig_held)
+		dk->held_frames++;
+	spin_unlock(&dk->trig_lock);
 	return IRQ_HANDLED;
 }
 
@@ -828,15 +861,77 @@ static const struct drm_driver decon_driver = {
 	DRM_FBDEV_DMA_DRIVER_OPS,
 };
 
+/*
+ * DECON0 and DSIM0 as they are, for comparing one boot with another: after Android rebooted into this kernel
+ * (2026-11-08), the link stopped at the first low power mode, every warm boot after it too, and a power-off cured
+ * it. Eight words to a line, lines of zeros left out; the counters are read again 50 ms on, to show whether the
+ * panel still sends TE and DECON still starts frames. The ranges are Stage A's (DPU-SPEC.md 7), read the same way
+ * without harm, except DSIM's FIFO ports: reading RXFIFO pops it.
+ */
+static void decon_print_regs(struct decon_kms *dk, struct drm_printer *p, const char *why)
+{
+	static const struct {
+		const char *name;
+		bool dsim;
+		u32 start, end;
+	} blocks[] = {
+		{ "decon", false, 0x0000, 0x02a8 },
+		{ "decon", false, 0x1000, 0x1120 },
+		{ "dsim", true, 0x0000, 0x0100 },
+	};
+	unsigned int b, i;
+	u32 te, frames, off, v[8];
+
+	for (b = 0; b < ARRAY_SIZE(blocks); b++) {
+		void __iomem *base = blocks[b].dsim ? dk->dsim : dk->decon;
+
+		for (off = blocks[b].start; off < blocks[b].end; off += sizeof(v)) {
+			bool any = false;
+
+			for (i = 0; i < ARRAY_SIZE(v); i++) {
+				u32 reg = off + 4 * i;
+
+				v[i] = reg >= blocks[b].end ||
+				       (blocks[b].dsim && reg >= DSIM_PKTHDR && reg <= DSIM_RXFIFO) ?
+				       0 : readl(base + reg);
+				any |= v[i];
+			}
+			if (any)
+				drm_printf(p, "%s%s+%04x %08x %08x %08x %08x %08x %08x %08x %08x\n", why,
+					   blocks[b].name, off, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]);
+		}
+	}
+
+	te = readl(dk->decon + DECON_HW_TE_CNT);
+	frames = readl(dk->decon + DECON_FRAME_COUNT);
+	msleep(50);
+	drm_printf(p, "%sTE %08x -> %08x, frames %08x -> %08x in 50 ms\n", why, te,
+		   readl(dk->decon + DECON_HW_TE_CNT), frames, readl(dk->decon + DECON_FRAME_COUNT));
+}
+
+static int decon_regs_show(struct seq_file *m, void *data)
+{
+	struct drm_debugfs_entry *entry = m->private;
+	struct drm_printer p = drm_seq_file_printer(m);
+
+	decon_print_regs(to_decon(entry->dev), &p, "");
+	return 0;
+}
+
 /* Refuse anything but the state S-Boot is known to leave (DPU-SPEC.md 7). */
 static int decon_check_handover(struct decon_kms *dk)
 {
 	struct device *dev = dk->drm.dev;
-	u32 ctrl = readl(dk->decon + DECON_GLOBAL_CONTROL);
-	u32 trig = readl(dk->decon + DECON_HW_SW_TRIG_CONTROL);
-	u32 path0 = readl(dk->decon + DECON_DATA_PATH_CONTROL_0);
-	u32 path1 = readl(dk->decon + DECON_DATA_PATH_CONTROL_1);
+	struct drm_printer p = drm_info_printer(dev);
+	u32 ctrl, trig, path0, path1;
 	unsigned int w, nwin = 0;
+
+	decon_print_regs(dk, &p, "handover: ");
+	decon_check_errors(dk, "at the handover");
+	ctrl = readl(dk->decon + DECON_GLOBAL_CONTROL);
+	trig = readl(dk->decon + DECON_HW_SW_TRIG_CONTROL);
+	path0 = readl(dk->decon + DECON_DATA_PATH_CONTROL_0);
+	path1 = readl(dk->decon + DECON_DATA_PATH_CONTROL_1);
 
 	if ((ctrl & DECON_GLOBAL_RUN) != DECON_GLOBAL_RUN ||
 	    (trig & (DECON_HW_TRIG_EN | DECON_HW_TRIG_MASK_DECON)) !=
@@ -876,10 +971,14 @@ static int decon_check_handover(struct decon_kms *dk)
 
 /* DSI host on S-Boot's link: short and long writes through the command FIFO */
 
+/*
+ * IDLE_STATUS is what the vendor driver waits for before partial-update commands ("previous frame data must be
+ * finished to transfer"). It was set with the trigger masked in low power mode, clear at the handover with frames
+ * running at 60 Hz. A FRAME_START not handled yet counts too.
+ */
 static bool decon_frame_running(struct decon_kms *dk)
 {
-	/* a FRAME_START not handled yet counts too */
-	return READ_ONCE(dk->in_frame) ||
+	return !(readl(dk->decon + DECON_GLOBAL_CONTROL) & DECON_GC_IDLE_STATUS) ||
 	       (readl(dk->decon + DECON_INTERRUPT_PENDING) & DECON_INT_FRAME_START);
 }
 
@@ -893,14 +992,21 @@ static bool decon_frame_running(struct decon_kms *dk)
  * a side RAM upload (75h, then 4Ch/5Ch) kept only its first third while the shell drew (2026-11-08). While held,
  * the TE trigger stays masked, and holding waits for a frame already under way to end; letting go starts the
  * frames that were wanted meanwhile.
+ *
+ * Return: when letting go, how many frame interrupts came while held, which should be none: any is a frame that
+ * reached the link inside the sequence, and the caller may send it again. 0 when holding.
  */
-void exynos9820_decon_hold_frames(struct mipi_dsi_host *host, bool hold)
+unsigned int exynos9820_decon_hold_frames(struct mipi_dsi_host *host, bool hold)
 {
 	struct decon_kms *dk = container_of(host, struct decon_kms, dsi_host);
 	unsigned long flags;
+	unsigned int frames;
+	bool running;
 
 	spin_lock_irqsave(&dk->trig_lock, flags);
 	dk->trig_held = hold;
+	frames = dk->held_frames;
+	dk->held_frames = 0;
 	if (hold && !dk->trig_masked) {
 		rmw(dk->decon, DECON_HW_SW_TRIG_CONTROL,
 		    DECON_HW_TRIG_MASK_DECON, DECON_HW_TRIG_MASK_DECON);
@@ -913,9 +1019,19 @@ void exynos9820_decon_hold_frames(struct mipi_dsi_host *host, bool hold)
 	}
 	spin_unlock_irqrestore(&dk->trig_lock, flags);
 
-	if (hold && !wait_event_timeout(dk->frame_wq, !decon_frame_running(dk),
-					msecs_to_jiffies(50)))
+	if (!hold) {
+		decon_check_errors(dk, "in a held sequence");
+		return frames;
+	}
+
+	decon_check_errors(dk, "before a held sequence");
+	if (read_poll_timeout(decon_frame_running, running, !running, 100, 50000, false, dk))
 		dev_warn_ratelimited(dk->drm.dev, "a frame did not end in 50 ms\n");
+	/* from here on: the frame waited for is not one that got in, a frame still running is */
+	spin_lock_irqsave(&dk->trig_lock, flags);
+	dk->held_frames = running;
+	spin_unlock_irqrestore(&dk->trig_lock, flags);
+	return 0;
 }
 EXPORT_SYMBOL_GPL(exynos9820_decon_hold_frames);
 
@@ -966,6 +1082,12 @@ static ssize_t decon_dsi_transfer(struct mipi_dsi_host *host,
 		dev_warn_ratelimited(dk->drm.dev,
 				     "DSIM FIFO stuck (FIFOCTRL 0x%08x)\n",
 				     readl(dk->dsim + DSIM_FIFOCTRL));
+		if (!dk->stuck_dumped) {
+			struct drm_printer p = drm_info_printer(dk->drm.dev);
+
+			dk->stuck_dumped = true;
+			decon_print_regs(dk, &p, "stuck: ");
+		}
 		return ret;
 	}
 
@@ -1013,14 +1135,13 @@ static int decon_drm_init(struct decon_kms *dk, struct drm_bridge *bridge)
 	ret = devm_request_irq(dev, dk->irq, decon_irq, 0, dev_name(dev), dk);
 	if (ret)
 		return ret;
-	/* FRAME_DONE too, for exynos9820_decon_hold_frames(); S-Boot enables FRAME_START */
-	drm_dbg_driver(drm, "interrupt enable was 0x%08x\n", readl(dk->decon + DECON_INTERRUPT_ENABLE));
-	rmw(dk->decon, DECON_INTERRUPT_ENABLE, DECON_INT_FRAME_DONE, DECON_INT_FRAME_DONE);
 
 	drm_mode_config_reset(drm);
 
 	/* enables the DP bridge's HPD, so plugging in a monitor sends a uevent */
 	drmm_kms_helper_poll_init(drm);
+
+	drm_debugfs_add_file(drm, "decon_regs", decon_regs_show, NULL);
 
 	/* evict simpledrm from S-Boot's framebuffer */
 	ret = aperture_remove_conflicting_devices(dk->boot_base,
@@ -1094,7 +1215,6 @@ static int decon_probe(struct platform_device *pdev)
 		return PTR_ERR(dk);
 	platform_set_drvdata(pdev, dk);
 	spin_lock_init(&dk->trig_lock);
-	init_waitqueue_head(&dk->frame_wq);
 
 	dk->decon = devm_platform_ioremap_resource_byname(pdev, "decon");
 	if (IS_ERR(dk->decon))

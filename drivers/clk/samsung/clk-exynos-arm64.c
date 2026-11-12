@@ -367,6 +367,15 @@ int exynos_arm64_cmu_resume(struct device *dev)
 	for (i = 0; i < data->nr_pclks; i++)
 		clk_prepare_enable(data->pclks[i]);
 
+	/* what a power-down reset (dynamic debug; nothing after an s2idle) */
+	for (i = 0; i < data->nr_clk_save; i++) {
+		u32 now = readl(data->ctx->reg_base + data->clk_save[i].offset);
+
+		if (now != data->clk_save[i].value)
+			dev_dbg(dev, "restore %04x: %08x -> %08x\n", data->clk_save[i].offset,
+				now, data->clk_save[i].value);
+	}
+
 	samsung_clk_restore(data->ctx->reg_base, NULL, data->clk_save,
 			    data->nr_clk_save);
 
