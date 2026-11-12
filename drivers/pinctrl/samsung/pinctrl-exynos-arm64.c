@@ -1249,10 +1249,31 @@ static const struct samsung_pin_bank_data exynos9820_pin_banks0[] __initconst = 
 };
 
 /* pin banks of exynos9820 pin-controller 1 (AUD) */
+/*
+ * The AUD banks lose their state with the AUD domain, which powers off whenever
+ * ABOX is idle, and ABOX sets its pins up again on every power-up. Saved or
+ * restored around a system sleep, they were read with the domain off, and that
+ * stalls the bus (2026-11-08, once the domain's power-off worked). Without the
+ * power-down fields, samsung_pinctrl_suspend() and _resume() pass them by.
+ */
+static const struct samsung_pin_bank_type exynos9820_aud_bank_type = {
+	.fld_width = { 4, 1, 4, 4, },
+	.reg_offset = { 0x00, 0x04, 0x08, 0x0c, },
+};
+
+#define EXYNOS9820_PIN_BANK_AUD(pins, reg, id)		\
+	{						\
+		.type		= &exynos9820_aud_bank_type,	\
+		.pctl_offset	= reg,			\
+		.nr_pins	= pins,			\
+		.eint_type	= EINT_TYPE_NONE,	\
+		.name		= id			\
+	}
+
 static const struct samsung_pin_bank_data exynos9820_pin_banks1[] __initconst = {
-	GS101_PIN_BANK_EINTG(5, 0x000, "gpb0", 0x00, 0x00),
-	GS101_PIN_BANK_EINTG(8, 0x020, "gpb1", 0x04, 0x08),
-	GS101_PIN_BANK_EINTG(4, 0x040, "gpb2", 0x08, 0x10),
+	EXYNOS9820_PIN_BANK_AUD(5, 0x000, "gpb0"),
+	EXYNOS9820_PIN_BANK_AUD(8, 0x020, "gpb1"),
+	EXYNOS9820_PIN_BANK_AUD(4, 0x040, "gpb2"),
 };
 
 /* pin banks of exynos9820 pin-controller 2 (CMGP) */

@@ -36,6 +36,8 @@
 #include <drm/drm_panel.h>
 #include <drm/drm_probe_helper.h>
 
+#include "../tiny/exynos9820-decon.h"
+
 #define AOR_DIMMEST	0x8d4
 #define AOR_BRIGHTEST	0x014
 #define MAX_BRIGHTNESS	255
@@ -175,12 +177,17 @@ static void beyond0_lpm_enter(struct mipi_dsi_multi_context *ctx, unsigned int i
 	mipi_dsi_dcs_write_seq_multi(ctx, 0xf7, 0x03);
 	key2_off(ctx);
 	mipi_dsi_msleep(ctx, 124);
-	/* ENTER_AOD (stock aod_enter_to_lpm): the AOD porch setting, bit 7 of 76h's 3rd byte; level 3 key only */
+	/*
+	 * ENTER_AOD (stock aod_enter_to_lpm): the AOD porch setting, bit 7 of 76h's 3rd byte; level 3 key only. No
+	 * frame between B0h and FEh, or the frame takes the offset and FEh 24 lands on p0.
+	 */
+	exynos9820_decon_hold_frames(ctx->dsi->host, true);
 	key3_on(ctx);
 	mipi_dsi_dcs_write_seq_multi(ctx, 0xb0, 0x33);
 	mipi_dsi_dcs_write_seq_multi(ctx, 0xfe, 0x24);
 	mipi_dsi_dcs_write_seq_multi(ctx, 0x76, 0x08, 0x10, 0x84, 0x38, 0x08, 0xe8);
 	key3_off(ctx);
+	exynos9820_decon_hold_frames(ctx->dsi->host, false);
 }
 
 static void beyond0_lpm_exit(struct mipi_dsi_multi_context *ctx)
@@ -208,6 +215,7 @@ static void beyond0_lpm_exit(struct mipi_dsi_multi_context *ctx)
 #define HANDS_FW		"samsung/s6e3fa7-beyond0-aod-hands.bin"
 #define HANDS_SIZE		(360 * 120 * 4)
 #define SIDE_RAM_CHUNK		496	/* stock: at most 511 bytes and a multiple of 16, inside the 512-byte FIFO */
+#define SIDE_RAM_SETTLE_MS	1200
 #define CLOCK_EN		0x07	/* A_CLK_EN | DISP_ON | TIME_EN */
 #define CLOCK_24H		0x20
 #define CLOCK_RATE_1S		0x1e	/* 30 frames */
@@ -228,8 +236,23 @@ static void beyond0_side_ram(struct beyond0_panel *bp, struct mipi_dsi_multi_con
 {
 	size_t off, n;
 
+	/*
+	 * The clock off (as "off" stops it), then a wait before the first write. After a crash reset (2026-11-08) the
+	 * bands were noise, and uploads sent right behind the stop kept only their last third; the same upload a
+	 * second after the stop was whole. Most likely the clock goes on reading side RAM for a while and side RAM
+	 * ignores writes meanwhile. Stock only uploads after a power-on, with the clock long stopped.
+	 */
 	key2_on(ctx);
-	mipi_dsi_dcs_write_seq_multi(ctx, 0x77, 0x00, 0x00);	/* the timer off before side RAM is touched */
+	mipi_dsi_dcs_write_seq_multi(ctx, 0x7d, 0x01);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0x77, 0x00, 0x00);
+	key2_off(ctx);
+	mipi_dsi_msleep(ctx, SIDE_RAM_SETTLE_MS);
+
+	/* and no frame inside it: on the first AOD after a boot, with the shell drawing, an upload kept only its
+	 * first third (2026-11-08) */
+	exynos9820_decon_hold_frames(bp->dsi->host, true);
+	key2_on(ctx);
+	mipi_dsi_dcs_write_seq_multi(ctx, 0x77, 0x00, 0x00);	/* stock's INIT_SIDE_RAM */
 	mipi_dsi_dcs_write_buffer_multi(ctx, (const u8 []){ 0x75, region }, 2);
 	for (off = 0; off < len && !ctx->accum_err; off += n) {
 		n = min_t(size_t, len - off, SIDE_RAM_CHUNK);
@@ -238,26 +261,34 @@ static void beyond0_side_ram(struct beyond0_panel *bp, struct mipi_dsi_multi_con
 		mipi_dsi_dcs_write_buffer_multi(ctx, bp->side_buf, n + 1);
 	}
 	key2_off(ctx);
+	exynos9820_decon_hold_frames(bp->dsi->host, false);
 }
 
 /*
- * SET_TIME with 9 parameters: stock sends 15, whose p9-p14 zeros land on the dial's centre (p9-p13). p8 is 03 on
- * the first update after entering low power mode and 13 after, as stock has it. The sub-second byte's unit is
- * unknown, so it stays 0 and the time is rounded to the nearest second.
+ * The whole 77h block in one packet, p0 on: the enables (p1), the time (p3-p6), the update rate in 30 Hz frames
+ * (p7), the step control (p8), the dial's centre (p9-p12) and each hand's pivot (p15-p20). It was a SET_TIME of
+ * p0-p8 and the centre after B0h 09 (start at p9), but a frame's packets between B0h and the command it is for take
+ * the offset: the centre and the pivots then landed on the time, the hands went to the top left corner, out of
+ * shape, with a "second hand" ticking (owner, 11-07 and 11-08, mostly on the first AOD after a boot, when the shell
+ * still draws). Stock sends a 15-parameter SET_TIME whose p9-p14 zeros land on the centre, so the block is one.
+ * p8 is always 03: stock sends 13 after the first update after entering low power mode, and the 13s were among the
+ * updates that came out wrong; the clock started with 03 is the one the owner verified. 78h 01 latches it. The
+ * sub-second byte's unit is unknown, so it stays 0 and the time is rounded to the nearest second.
  */
-static void beyond0_clock_time(struct beyond0_panel *bp, struct mipi_dsi_multi_context *ctx, bool first)
+static void beyond0_clock_set(struct beyond0_panel *bp, struct mipi_dsi_multi_context *ctx)
 {
 	struct timespec64 ts;
 	struct tm tm;
-	u8 t[10] = { 0x77, 0x00, CLOCK_EN | (bp->clock_24h ? CLOCK_24H : 0), 0x00 };
+	u8 t[] = { 0x77, 0x00, CLOCK_EN | (bp->clock_24h ? CLOCK_24H : 0), 0x00,
+		   0x00, 0x00, 0x00, 0x00, CLOCK_RATE_1S, 0x03,
+		   bp->clock_x >> 8, bp->clock_x & 0xff, bp->clock_y >> 8, bp->clock_y & 0xff, 0x00, 0x00,
+		   0x5a, 0x14, 0x5a, 0x14, 0x5a, 0x14 };
 
 	ktime_get_real_ts64(&ts);
 	time64_to_tm(ts.tv_sec + (ts.tv_nsec >= NSEC_PER_SEC / 2), bp->clock_utcoff, &tm);
 	t[4] = tm.tm_hour;
 	t[5] = tm.tm_min;
 	t[6] = tm.tm_sec;
-	t[8] = CLOCK_RATE_1S;
-	t[9] = first ? 0x03 : 0x13;
 
 	key2_on(ctx);
 	mipi_dsi_dcs_write_buffer_multi(ctx, t, sizeof(t));
@@ -267,29 +298,25 @@ static void beyond0_clock_time(struct beyond0_panel *bp, struct mipi_dsi_multi_c
 	bp->clock_synced = ktime_get_boottime_seconds();
 }
 
-static void beyond0_clock_place(struct mipi_dsi_multi_context *ctx, u8 en, u16 x, u16 y)
-{
-	u8 pos[] = { 0x77, x >> 8, x & 0xff, y >> 8, y & 0xff, 0x00, 0x00,
-		     0x5a, 0x14, 0x5a, 0x14, 0x5a, 0x14 };
-
-	key2_on(ctx);
-	mipi_dsi_dcs_write_seq_multi(ctx, 0xb0, 0x09);
-	mipi_dsi_dcs_write_buffer_multi(ctx, pos, sizeof(pos));
-	mipi_dsi_dcs_write_buffer_multi(ctx, (const u8 []){ 0x77, 0x00, en, 0x00 }, 4);
-	key2_off(ctx);
-}
-
 /*
- * Stock's SELF_MOVE_ON, which it sends after every analog clock setup: the table, then the enable byte, 03 as is
- * (no icon, no move) or 01 (02 cleared, as after its AOD app's SELF_MOVE_EN). Not 7D 01 instead: that is the
- * reset of LPM exit, and with the clock running it threw the hands to the top left corner.
+ * Stock's SELF_MOVE_ON, which it sends after every analog clock setup: the table at p6 on (it sent B0h 06 first),
+ * then the enable byte, 03 as is (no icon, no move) or 01 (02 cleared, as after its AOD app's SELF_MOVE_EN), in one
+ * packet here for the same reason as the 77h block. Not 7D 01 instead: that is the reset of LPM exit, and with the
+ * clock running it threw the hands to the top left corner.
  */
-static void beyond0_self_move(struct mipi_dsi_multi_context *ctx, bool on)
+static void beyond0_self_move(struct beyond0_panel *bp, struct mipi_dsi_multi_context *ctx, bool on)
 {
+	u8 *buf = bp->side_buf;
+	static const u8 head[] = { 0x7d, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00 };
+
+	BUILD_BUG_ON(sizeof(head) + sizeof(beyond0_self_move_1s) - 1 > SIDE_RAM_CHUNK + 1);
+	memcpy(buf, head, sizeof(head));
+	buf[2] = on ? 0x01 : 0x03;
+	/* the table without its 7Dh */
+	memcpy(buf + sizeof(head), beyond0_self_move_1s + 1, sizeof(beyond0_self_move_1s) - 1);
+
 	key2_on(ctx);
-	mipi_dsi_dcs_write_seq_multi(ctx, 0xb0, 0x06);
-	mipi_dsi_dcs_write_buffer_multi(ctx, beyond0_self_move_1s, sizeof(beyond0_self_move_1s));
-	mipi_dsi_dcs_write_buffer_multi(ctx, (const u8 []){ 0x7d, 0x00, on ? 0x01 : 0x03, 0x00, 0x00, 0x00, 0x00 }, 7);
+	mipi_dsi_dcs_write_buffer_multi(ctx, buf, sizeof(head) + sizeof(beyond0_self_move_1s) - 1);
 	key2_off(ctx);
 }
 
@@ -496,7 +523,6 @@ static ssize_t self_clock_store(struct device *dev, struct device_attribute *att
 	struct mipi_dsi_multi_context ctx = { .dsi = bp->dsi };
 	unsigned int x, y, fmt = 24;
 	int off, ret;
-	bool first;
 
 	if (sysfs_streq(buf, "off")) {
 		guard(mutex)(&bp->lpm_lock);
@@ -547,25 +573,22 @@ static ssize_t self_clock_store(struct device *dev, struct device_attribute *att
 	bp->clock_utcoff = off;
 	bp->clock_24h = fmt == 24;
 	if (bp->clock_on && x == bp->clock_x && y == bp->clock_y) {
-		beyond0_clock_time(bp, &ctx, false);
+		beyond0_clock_set(bp, &ctx);
 		return ctx.accum_err ?: len;
 	}
-	first = !bp->clock_on;
 	if (!bp->hands_loaded) {
 		beyond0_side_ram(bp, &ctx, 0x01, bp->hands->data, HANDS_SIZE);
 		if (ctx.accum_err)
 			return ctx.accum_err;
 		bp->hands_loaded = true;
 	}
-	/* the time last: if 78h latches more than the time, the position is in by then */
-	beyond0_clock_place(&ctx, CLOCK_EN | (bp->clock_24h ? CLOCK_24H : 0), x, y);
-	beyond0_clock_time(bp, &ctx, first);
-	beyond0_self_move(&ctx, self_move);
+	bp->clock_x = x;
+	bp->clock_y = y;
+	beyond0_clock_set(bp, &ctx);
+	beyond0_self_move(bp, &ctx, self_move);
 	if (ctx.accum_err)
 		return ctx.accum_err;
 	WRITE_ONCE(bp->clock_on, true);
-	bp->clock_x = x;
-	bp->clock_y = y;
 	return len;
 }
 static DEVICE_ATTR_RW(self_clock);
@@ -589,7 +612,7 @@ static void beyond0_resync(struct work_struct *work)
 	guard(mutex)(&bp->lpm_lock);
 	if (!bp->clock_on || bp->asleep || !bp->lpm)
 		return;
-	beyond0_clock_time(bp, &ctx, false);
+	beyond0_clock_set(bp, &ctx);
 	if (ctx.accum_err)
 		dev_warn_ratelimited(&bp->dsi->dev, "self clock not resynced: %d\n", ctx.accum_err);
 }

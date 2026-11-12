@@ -20,9 +20,38 @@
 #include <asm/cpu_ops.h>
 #include <asm/errno.h>
 #include <asm/smp_plat.h>
+#include <asm/topology.h>
+
+/*
+ * Samsung's EL3 on the Exynos9820 reads CPU_OFF's power state: stock passes
+ * affinity level 1 for the last CPU of a cluster to have the cluster taken
+ * down as well. Passed level 0, the cluster stays up as far as the firmware
+ * knows; a system sleep then powers it off underneath, and after the wake the
+ * second CPU of the big cluster hung coming up (2026-11-08).
+ */
+static bool psci_off_cluster_level;
+
+/*
+ * No other CPU of @cpu's power cluster online: MPIDR affinity level 1, as the
+ * firmware counts. Not the scheduler's clusters: the 9820's little and middle
+ * cores are two of those but one DSU, and the firmware refuses a cluster-level
+ * CPU_OFF for the last middle core (-EINVAL, the kernel's BUG in cpu_die).
+ */
+static bool psci_cluster_last(unsigned int cpu)
+{
+	u64 cluster = MPIDR_AFFINITY_LEVEL(cpu_logical_map(cpu), 1);
+	unsigned int other;
+
+	for_each_online_cpu(other)
+		if (other != cpu && MPIDR_AFFINITY_LEVEL(cpu_logical_map(other), 1) == cluster)
+			return false;
+	return true;
+}
 
 static int __init cpu_psci_cpu_init(unsigned int cpu)
 {
+	if (of_machine_is_compatible("samsung,exynos9820"))
+		psci_off_cluster_level = true;
 	return 0;
 }
 
@@ -73,6 +102,9 @@ static void cpu_psci_cpu_die(unsigned int cpu)
 	 */
 	u32 state = PSCI_POWER_STATE_TYPE_POWER_DOWN <<
 		    PSCI_0_2_POWER_STATE_TYPE_SHIFT;
+
+	if (psci_off_cluster_level && psci_cluster_last(cpu))
+		state |= 1 << PSCI_0_2_POWER_STATE_AFFL_SHIFT;
 
 	psci_ops.cpu_off(state);
 }

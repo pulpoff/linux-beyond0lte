@@ -287,7 +287,11 @@ int s3fwrn5_fw_request_firmware(struct s3fwrn5_fw_info *fw_info)
 	u32 custom_sig_off;
 	int ret;
 
-	ret = request_firmware(&fw->fw, fw_info->fw_name,
+	/*
+	 * No user-helper fallback: without the file the chip runs the firmware
+	 * in its flash, and a fallback would stall every power-up for 60 s.
+	 */
+	ret = request_firmware_direct(&fw->fw, fw_info->fw_name,
 		&fw_info->ndev->nfc_dev->dev);
 	if (ret < 0)
 		return ret;

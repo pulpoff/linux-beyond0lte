@@ -12,6 +12,9 @@
 #include <linux/regmap.h>
 #include <linux/topology.h>
 
+#include <asm/cputype.h>
+#include <asm/smp_plat.h>
+
 #include "exynos-pmu.h"
 
 static unsigned exynos9820_cluster_offsets[] = {
@@ -19,6 +22,21 @@ static unsigned exynos9820_cluster_offsets[] = {
 	GS101_CLUSTER1_OFFSET,
 	GS101_CLUSTER2_OFFSET,
 };
+
+/*
+ * As psci_cluster_last(): no other CPU of the power cluster (MPIDR affinity
+ * level 1: the little and middle cores are one) online.
+ */
+static bool exynos9820_cluster_last(unsigned int cpu)
+{
+	u64 cluster = MPIDR_AFFINITY_LEVEL(cpu_logical_map(cpu), 1);
+	unsigned int other;
+
+	for_each_online_cpu(other)
+		if (other != cpu && MPIDR_AFFINITY_LEVEL(cpu_logical_map(other), 1) == cluster)
+			return false;
+	return true;
+}
 
 static int exynos9820_cpu_pmu_offline(struct exynos_pmu_context *pmu_context,
 				      unsigned int cpu)
@@ -51,8 +69,17 @@ static int exynos9820_cpu_pmu_offline(struct exynos_pmu_context *pmu_context,
 		return -EINVAL;
 	}
 
-	regmap_write(pmu_context->pmureg, GS101_CPU_INFORM(smp_processor_id()),
-		     CPU_INFORM_C2);
+	/*
+	 * Hotplug (the CPU is out of cpu_online_mask already, unlike in C2):
+	 * the cluster's last CPU says the cluster goes down too, as stock's
+	 * pmucal_cpu_cluster_disable does, and CPU_OFF passes the cluster
+	 * level to match (cpu_psci_cpu_die).
+	 */
+	if (!cpu_online(cpu) && exynos9820_cluster_last(cpu))
+		regmap_write(pmu_context->pmureg, GS101_CPU_INFORM(cpu), CPU_INFORM_CPD);
+	else
+		regmap_write(pmu_context->pmureg, GS101_CPU_INFORM(smp_processor_id()),
+			     CPU_INFORM_C2);
 
 	mask = BIT(cpu);
 	regmap_update_bits(pmu_context->pmuintrgen, EXYNOS_GRP2_INTR_BID_ENABLE,

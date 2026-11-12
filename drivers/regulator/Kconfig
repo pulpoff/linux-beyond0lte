@@ -1463,6 +1463,7 @@ config REGULATOR_S2MPA01
 config REGULATOR_S2MPB02
 	tristate "Samsung S2MPB02 camera PMIC regulators"
 	depends on I2C
+	select MFD_CORE
 	select REGMAP_I2C
 	help
 	  The LDOs and bucks of the Samsung S2MPB02 PMIC that powers the

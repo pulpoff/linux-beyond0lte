@@ -9,6 +9,12 @@
  * is interleaved with resets in the controller's ELBI block, so it lives here
  * rather than in a separate PHY driver.
  *
+ * The SoC sleep (exynos9820-sleep) takes the controller's power and state: the
+ * link is taken down for it and brought up from scratch after it, as
+ * downstream's exynos_pcie_poweroff/poweron do. WLAN_REG_ON stays on, so the
+ * BCM4375's firmware runs on in D3cold and wakes the AP over its host-wake
+ * line. In s2idle the link stays up.
+ *
  * Bring-up aid: the "stage" parameter stops early. 0 = only log the state
  * left by the bootloader (ELBI and syscons), 1 = also power and configure
  * the PHY and log the PLL state,
@@ -16,14 +22,18 @@
  */
 #include <linux/delay.h>
 #include <linux/gpio/consumer.h>
+#include <linux/gpio/driver.h>
 #include <linux/interrupt.h>
 #include <linux/iopoll.h>
 #include <linux/mfd/syscon.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/pinctrl/consumer.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
+#include <linux/soc/samsung/exynos-pmu.h>
+#include <linux/suspend.h>
 
 #include "pcie-designware.h"
 
@@ -38,10 +48,12 @@
 #define ELBI_LTSSM_ENABLE	0x02c
 #define ELBI_IRQ_EN_PULSE2	0x034
 #define ELBI_IRQ_EN_PULSE3	0x038
+#define ELBI_APP_REQ_EXIT_L1	0x040
+#define ELBI_XMIT_PME_TURNOFF	0x04c
 #define ELBI_RDLH_LINKUP	0x074
 #define ELBI_PM_DSTATE		0x088
 #define ELBI_HISTORY(i)		(0x138 + 4 * (i))
-#define ELBI_APP_REQ_EXIT_L1	0x0f4
+#define ELBI_APP_REQ_EXIT_L1_MODE 0x0f4
 #define ELBI_LINKDOWN_RST_SEL	0x1b8
 #define ELBI_SOFT_CORE_RESET	0x1d0
 #define ELBI_HISTORY_CTRL	0x274
@@ -52,8 +64,12 @@
 #define ELBI_L12ERR_CTRL	0x2f0
 
 #define IRQ_INTX_MASK		0x55	/* INTA..INTD */
+#define IRQ_RADM_PM_TO_ACK	BIT(18)
 #define IRQ_LINK_DOWN		BIT(30)
 #define LTSSM_MASK		0x1f
+#define LTSSM_L2_IDLE		0x15	/* L2/L3 Ready */
+#define L1_EXIT_HW_MODE		BIT(0)	/* in APP_REQ_EXIT_L1_MODE */
+#define L1_REQ_NAK_MASTER	BIT(4)
 
 /* PCS registers */
 #define PCS_L1SS_TIMEOUT	0x00c
@@ -88,6 +104,7 @@ struct exynos9820_pcie {
 	struct regmap *sysreg;
 	struct gpio_desc *perst;
 	struct regulator *vpcie;
+	bool suspended;		/* taken down for the SoC sleep */
 };
 
 #define to_exynos9820(x)	dev_get_drvdata((x)->dev)
@@ -152,6 +169,30 @@ static void exynos9820_pcie_log_state(struct exynos9820_pcie *ep, const char *wh
 			 readl(ep->pcs + PCS_ELECIDLE), readl(ep->phy + PHY_PLL_STATE));
 }
 
+/* DEBUG 2026-11-09: ELBI, PCS and PHY at "ready for dbi", cold start vs. after the SoC sleep */
+static void exynos9820_pcie_dump_regs(struct exynos9820_pcie *ep, const char *when)
+{
+	static const struct { const char *name; size_t off; unsigned int len; } blk[] = {
+		{ "elbi", offsetof(struct exynos9820_pcie, elbi), 0x300 },
+		{ "pcs", offsetof(struct exynos9820_pcie, pcs), 0x200 },
+		{ "phy", offsetof(struct exynos9820_pcie, phy), 0x200 },
+	};
+	unsigned int b, o, i;
+	char buf[96];
+
+	for (b = 0; b < ARRAY_SIZE(blk); b++) {
+		void __iomem *base = *(void __iomem **)((char *)ep + blk[b].off);
+
+		for (o = 0; o < blk[b].len; o += 0x20) {
+			int n = 0;
+
+			for (i = 0; i < 0x20; i += 4)
+				n += scnprintf(buf + n, sizeof(buf) - n, " %08x", readl(base + o + i));
+			dev_info(ep->pci.dev, "%s %s %03x:%s\n", when, blk[b].name, o, buf);
+		}
+	}
+}
+
 static void exynos9820_pcie_dump_history(struct exynos9820_pcie *ep)
 {
 	int i;
@@ -196,6 +237,20 @@ static void exynos9820_pcie_phy_config(struct exynos9820_pcie *ep)
 	rmw(ep->pcs + PCS_CDR, 0x3 << 6, 0);
 }
 
+/*
+ * exynos_phy_all_pwrdn(), ch_num 0. The PLL calibrates on the way out of this (phy_config writes
+ * the running values back), so the PHY goes down before the SoC sleep stops its 26 MHz reference.
+ * Without it the PHY sat powered through the sleep and came back unlocked (PLL state eb, ef after a
+ * cold start) with the LTSSM stuck in Detect.Quiet, 2026-11-09.
+ */
+static void exynos9820_pcie_phy_pwrdn(struct exynos9820_pcie *ep)
+{
+	writel(0xfe, ep->phy + 0x57 * 4);	/* transceiver */
+	writel(0xc1, ep->phy + 0x20 * 4);	/* common */
+	rmw(ep->pcs + PCS_REFCLK_CTRL, 0, BIT(6));
+	rmw(ep->pcs + PCS_REFCLK_CTRL2, 0, BIT(7));
+}
+
 /* The part of exynos_pcie_establish_link() before the LTSSM is enabled */
 static void exynos9820_pcie_reset_and_config(struct exynos9820_pcie *ep)
 {
@@ -208,7 +263,7 @@ static void exynos9820_pcie_reset_and_config(struct exynos9820_pcie *ep)
 	gpiod_set_value_cansleep(ep->perst, 0);		/* PERST# released */
 	usleep_range(18000, 20000);
 
-	rmw(ep->elbi + ELBI_APP_REQ_EXIT_L1, 0, BIT(0) | BIT(4));
+	rmw(ep->elbi + ELBI_APP_REQ_EXIT_L1_MODE, 0, L1_EXIT_HW_MODE | L1_REQ_NAK_MASTER);
 	writel(0x2, ep->elbi + ELBI_LINKDOWN_RST_SEL);
 	rmw(ep->elbi + ELBI_QCH_SEL, 0xfff, 0);
 
@@ -223,17 +278,20 @@ static int exynos9820_pcie_host_init(struct dw_pcie_rp *pp)
 	struct exynos9820_pcie *ep = to_exynos9820(pci);
 	int ret;
 
-	exynos9820_pcie_log_state(ep, "bootloader", false);
+	/* after the SoC sleep: WLAN_REG_ON never went off */
+	exynos9820_pcie_log_state(ep, ep->suspended ? "resume" : "bootloader", false);
 	if (stage < 1)
 		return -ENODEV;
 
-	if (ep->vpcie) {
+	if (ep->vpcie && !ep->suspended) {
 		ret = regulator_enable(ep->vpcie);	/* WLAN_REG_ON + 200 ms */
 		if (ret)
 			return ret;
 	}
 
 	regmap_update_bits(ep->pmu, PMU_PCIE_PHY_CTRL, BIT(0), BIT(0));
+	if (ep->suspended)
+		exynos9820_pcie_phy_pwrdn(ep);	/* in case the suspend's writes did not stick */
 	writel(0, ep->elbi + ELBI_L12ERR_CTRL);		/* NCLK_OFF: hang, not error */
 
 	writel(IRQ_INTX_MASK, ep->elbi + ELBI_IRQ_EN_PULSE);
@@ -253,6 +311,7 @@ static int exynos9820_pcie_host_init(struct dw_pcie_rp *pp)
 
 	exynos9820_pcie_reset_and_config(ep);
 	exynos9820_pcie_log_state(ep, "ready for dbi", true);
+	exynos9820_pcie_dump_regs(ep, ep->suspended ? "resume" : "boot");
 
 	/* PCS keeps ignoring RX electrical idle until start_link */
 	dw_pcie_dbi_ro_wr_en(pci);
@@ -269,6 +328,7 @@ static void exynos9820_pcie_host_deinit(struct dw_pcie_rp *pp)
 	struct exynos9820_pcie *ep = to_exynos9820(pci);
 
 	gpiod_set_value_cansleep(ep->perst, 1);
+	regmap_update_bits(ep->pmu, PMU_PCIE_PHY_CTRL, BIT(0), 0);	/* the PHY isolated again */
 	if (ep->vpcie)
 		regulator_disable(ep->vpcie);
 }
@@ -365,6 +425,30 @@ static irqreturn_t exynos9820_pcie_irq(int irq, void *arg)
 	return (pulse | level | special) ? IRQ_HANDLED : IRQ_NONE;
 }
 
+/*
+ * WLAN_REG_ON (gpg0-5, the vpcie regulator's GPIO on beyond0) keeps its level in the SoC's
+ * power-down mode, like stock's cfg_wlanen (samsung,pin-con-pdn = <3>, pin-pud-pdn = <0>), so the
+ * BCM4375 stays powered through a SoC sleep. Without it the pad went low there and the chip came
+ * back unpowered ("no link, ltssm 00", 2026-11-08). Belongs in the DT's wlan-en pins (U-Boot);
+ * until then here. Samsung pinconf packs value << 8 | type: CON_PDN 4, PUD_PDN 5.
+ */
+static void exynos9820_pcie_wlan_en_pdn(struct device *dev)
+{
+	struct gpio_device *gdev = gpio_device_find_by_label("gpg0");
+	int ret;
+
+	if (!gdev) {
+		dev_warn(dev, "no gpg0: WLAN_REG_ON drops in a SoC sleep\n");
+		return;
+	}
+	ret = pinctrl_gpio_set_config(gpio_device_get_chip(gdev), 5, 3 << 8 | 4);
+	if (!ret)
+		ret = pinctrl_gpio_set_config(gpio_device_get_chip(gdev), 5, 0 << 8 | 5);
+	gpio_device_put(gdev);
+	if (ret)
+		dev_warn(dev, "WLAN_REG_ON power-down config: %d\n", ret);
+}
+
 static int exynos9820_pcie_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -409,6 +493,8 @@ static int exynos9820_pcie_probe(struct platform_device *pdev)
 			return PTR_ERR(ep->vpcie);
 		ep->vpcie = NULL;
 	}
+	if (ep->vpcie)
+		exynos9820_pcie_wlan_en_pdn(dev);
 
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0)
@@ -421,6 +507,115 @@ static int exynos9820_pcie_probe(struct platform_device *pdev)
 	return dw_pcie_host_init(&ep->pci.pp);
 }
 
+/*
+ * The PCI bus goes first. Without this, rmmod left the root port on the bus
+ * with its config space unmapped, and the next suspend's PME save read it:
+ * a translation fault in pci_generic_config_read (2026-11-08).
+ */
+static void exynos9820_pcie_remove(struct platform_device *pdev)
+{
+	struct exynos9820_pcie *ep = platform_get_drvdata(pdev);
+
+	dw_pcie_host_deinit(&ep->pci.pp);
+}
+
+/*
+ * After the endpoint went to D3hot (brcmfmac sent D3_INFORM): PME_Turn_Off,
+ * PME_TO_Ack, L2/L3 Ready, then PERST# (exynos_pcie_send_pme_turn_off and
+ * exynos_pcie_poweroff). Not dw_pcie_suspend_noirq(): it wants the root port
+ * in D3hot too, which it never is here, and then does nothing.
+ */
+static int exynos9820_pcie_suspend_noirq(struct device *dev)
+{
+	struct exynos9820_pcie *ep = dev_get_drvdata(dev);
+	u32 v;
+
+	if (!pm_suspend_via_firmware())
+		return 0;
+
+	rmw(ep->elbi + ELBI_IRQ_EN_PULSE, IRQ_LINK_DOWN, 0);
+	if (exynos9820_pcie_link_up(&ep->pci)) {
+		writel(1, ep->elbi + ELBI_APP_REQ_EXIT_L1);
+		rmw(ep->elbi + ELBI_APP_REQ_EXIT_L1_MODE, L1_EXIT_HW_MODE, L1_REQ_NAK_MASTER);
+		writel(IRQ_RADM_PM_TO_ACK, ep->elbi + ELBI_IRQ_PULSE);
+		writel(1, ep->elbi + ELBI_XMIT_PME_TURNOFF);
+		if (readl_poll_timeout(ep->elbi + ELBI_IRQ_PULSE, v, v & IRQ_RADM_PM_TO_ACK, 10, 20000))
+			dev_warn(dev, "no PME_TO_Ack\n");
+		writel(0, ep->elbi + ELBI_XMIT_PME_TURNOFF);
+		if (readl_poll_timeout(ep->elbi + ELBI_RDLH_LINKUP, v,
+				       (v & LTSSM_MASK) == LTSSM_L2_IDLE, 10, 20000))
+			dev_warn(dev, "no L2/L3 Ready, ltssm %02x\n", v & LTSSM_MASK);
+	}
+	exynos9820_pcie_stop_link(&ep->pci);
+	exynos9820_pcie_phy_pwrdn(ep);
+	/*
+	 * Isolated again, as the bootloader leaves it: the PHY powers up with the SoC under its
+	 * isolation, which resume releases. Released through the sleep, the PLL came back
+	 * unlocked (state eb) even after the power-down cycle (2026-11-09 01:31).
+	 */
+	regmap_update_bits(ep->pmu, PMU_PCIE_PHY_CTRL, BIT(0), 0);
+	ep->suspended = true;
+	return 0;
+}
+
+/*
+ * After a SoC sleep every pad of a block that lost power holds its sleep level until the sleep driver lets go of
+ * them in its .finish, after all noirq and early resume callbacks. PERST# (gpf2-2) then stayed asserted through
+ * the link-up here: the BCM4375 never left reset and the LTSSM never left Detect.Quiet (ltssm 00, kernel #53-#56;
+ * an early wake-up, whose pads were never held, always trained). pinctrl_fsys1 has written gpf2 back by now (a
+ * noirq op, and fw_devlink orders a supplier first), so the FSYS1 pads' group is let go of here. Which TOP_OUT bit
+ * that is no source says; bit 15, found 2026-11-09 by pad_bit -1, which releases them one at a time until the link
+ * trains and says which one it was.
+ */
+static int pad_bit = 15;
+module_param(pad_bit, int, 0644);
+MODULE_PARM_DESC(pad_bit, "TOP_OUT bit (10..19) of the FSYS1 pads' retention, -1: find it");
+
+static int exynos9820_pcie_link_resume(struct exynos9820_pcie *ep)
+{
+	struct dw_pcie_rp *pp = &ep->pci.pp;
+	int ret;
+
+	ret = exynos9820_pcie_host_init(pp);
+	if (!ret)
+		ret = dw_pcie_setup_rc(pp);
+	if (!ret)
+		ret = dw_pcie_start_link(&ep->pci);
+	if (!ret)
+		ret = dw_pcie_wait_for_link(&ep->pci);
+	return ret;
+}
+
+/* Before the PCI core restores the root port's and the endpoint's config space */
+static int exynos9820_pcie_resume_noirq(struct device *dev)
+{
+	struct exynos9820_pcie *ep = dev_get_drvdata(dev);
+	int bit = READ_ONCE(pad_bit), ret;
+
+	if (!ep->suspended)
+		return 0;
+
+	if (bit >= 10 && bit <= 19 && exynos9820_sleep_release_pads(BIT(bit)))
+		dev_info(dev, "FSYS1 pads released (TOP_OUT bit %d)\n", bit);
+	ret = exynos9820_pcie_link_resume(ep);
+	for (bit = 10; ret && READ_ONCE(pad_bit) < 0 && bit <= 19; bit++) {
+		if (!exynos9820_sleep_release_pads(BIT(bit)))
+			continue;	/* not held: no SoC sleep, or let go of already */
+		ret = exynos9820_pcie_link_resume(ep);
+		dev_info(dev, "TOP_OUT bit %d released: %s\n", bit, ret ? "still no link" : "link up");
+		if (!ret)
+			WRITE_ONCE(pad_bit, bit);
+	}
+	ep->suspended = false;
+	if (ret)
+		dev_err(dev, "no link after the SoC sleep: %d\n", ret);
+	return ret;
+}
+
+static const struct dev_pm_ops exynos9820_pcie_pm_ops = {
+	NOIRQ_SYSTEM_SLEEP_PM_OPS(exynos9820_pcie_suspend_noirq, exynos9820_pcie_resume_noirq)
+};
+
 static const struct of_device_id exynos9820_pcie_of_match[] = {
 	{ .compatible = "samsung,exynos9820-pcie" },
 	{ }
@@ -429,9 +624,11 @@ MODULE_DEVICE_TABLE(of, exynos9820_pcie_of_match);
 
 static struct platform_driver exynos9820_pcie_driver = {
 	.probe = exynos9820_pcie_probe,
+	.remove = exynos9820_pcie_remove,
 	.driver = {
 		.name = "exynos9820-pcie",
 		.of_match_table = exynos9820_pcie_of_match,
+		.pm = pm_sleep_ptr(&exynos9820_pcie_pm_ops),
 		.suppress_bind_attrs = true,
 	},
 };

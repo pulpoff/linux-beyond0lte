@@ -1526,9 +1526,16 @@ static const struct of_device_id samsung_pinctrl_dt_match[] = {
 	{},
 };
 
+/*
+ * NOIRQ, not LATE: a PCIe root complex trains its link again in its own resume_noirq, and on
+ * Exynos9820 the FSYS1 banks come back from a SoC sleep reset to inputs (gpf2 con 0x102 -> 0).
+ * Restored only in resume_early, CLKREQ# was not muxed and PERST# not driven while the RC
+ * trained: LTSSM stuck in Detect.Quiet, the S10e's Wi-Fi gone (2026-11-09). Device links put
+ * the pin controller before its consumers in the noirq phases as in the others.
+ */
 static const struct dev_pm_ops samsung_pinctrl_pm_ops = {
-	SET_LATE_SYSTEM_SLEEP_PM_OPS(samsung_pinctrl_suspend,
-				     samsung_pinctrl_resume)
+	SET_NOIRQ_SYSTEM_SLEEP_PM_OPS(samsung_pinctrl_suspend,
+				      samsung_pinctrl_resume)
 };
 
 static struct platform_driver samsung_pinctrl_driver = {

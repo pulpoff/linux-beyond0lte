@@ -56,6 +56,7 @@
 #include <drm/drm_simple_kms_helper.h>
 #include <drm/drm_vblank.h>
 
+#include "exynos9820-decon.h"
 #include "exynos9820-dp.h"
 
 /* DECON0 */
@@ -123,6 +124,11 @@ struct decon_kms {
 	unsigned int trig_frames;
 	bool trig_vblank;
 	bool trig_masked;
+	/* the panel's command sequence under way: no frame starts (trig_lock) */
+	bool trig_held;
+	/* between FRAME_START and FRAME_DONE (trig_lock), frame_wq when it ends */
+	bool in_frame;
+	wait_queue_head_t frame_wq;
 
 	struct mipi_dsi_host dsi_host;
 	struct mutex dsi_lock;		/* one packet in the FIFO at a time */
@@ -161,7 +167,7 @@ static void decon_trig_kick(struct decon_kms *dk, unsigned int frames)
 
 	spin_lock_irqsave(&dk->trig_lock, flags);
 	dk->trig_frames = max(dk->trig_frames, frames);
-	if (dk->trig_masked) {
+	if (dk->trig_masked && !dk->trig_held) {
 		rmw(dk->decon, DECON_HW_SW_TRIG_CONTROL,
 		    DECON_HW_TRIG_MASK_DECON, 0);
 		dk->trig_masked = false;
@@ -791,6 +797,13 @@ static irqreturn_t decon_irq(int irq, void *data)
 		drm_crtc_handle_vblank(&dk->pipe.crtc);
 		decon_trig_idle(dk);
 	}
+	if (pend & (DECON_INT_FRAME_START | DECON_INT_FRAME_DONE)) {
+		spin_lock(&dk->trig_lock);
+		dk->in_frame = !(pend & DECON_INT_FRAME_DONE);
+		spin_unlock(&dk->trig_lock);
+		if (pend & DECON_INT_FRAME_DONE)
+			wake_up(&dk->frame_wq);
+	}
 	return IRQ_HANDLED;
 }
 
@@ -862,6 +875,49 @@ static int decon_check_handover(struct decon_kms *dk)
 }
 
 /* DSI host on S-Boot's link: short and long writes through the command FIFO */
+
+static bool decon_frame_running(struct decon_kms *dk)
+{
+	/* a FRAME_START not handled yet counts too */
+	return READ_ONCE(dk->in_frame) ||
+	       (readl(dk->decon + DECON_INTERRUPT_PENDING) & DECON_INT_FRAME_START);
+}
+
+/**
+ * exynos9820_decon_hold_frames - keep frames off the link around a command sequence
+ * @host: the panel's DSI host
+ * @hold: true before the sequence, false after it
+ *
+ * Commands go out through the command FIFO as they come, and a frame (2Ch/3Ch) can reach the panel between two of
+ * them. Most sequences do not mind. Two on the S6E3FA7 do: a B0h offset is taken by whatever packet comes next, and
+ * a side RAM upload (75h, then 4Ch/5Ch) kept only its first third while the shell drew (2026-11-08). While held,
+ * the TE trigger stays masked, and holding waits for a frame already under way to end; letting go starts the
+ * frames that were wanted meanwhile.
+ */
+void exynos9820_decon_hold_frames(struct mipi_dsi_host *host, bool hold)
+{
+	struct decon_kms *dk = container_of(host, struct decon_kms, dsi_host);
+	unsigned long flags;
+
+	spin_lock_irqsave(&dk->trig_lock, flags);
+	dk->trig_held = hold;
+	if (hold && !dk->trig_masked) {
+		rmw(dk->decon, DECON_HW_SW_TRIG_CONTROL,
+		    DECON_HW_TRIG_MASK_DECON, DECON_HW_TRIG_MASK_DECON);
+		dk->trig_masked = true;
+	} else if (!hold && dk->trig_masked &&
+		   (dk->trig_frames || dk->trig_vblank || !READ_ONCE(psr))) {
+		rmw(dk->decon, DECON_HW_SW_TRIG_CONTROL,
+		    DECON_HW_TRIG_MASK_DECON, 0);
+		dk->trig_masked = false;
+	}
+	spin_unlock_irqrestore(&dk->trig_lock, flags);
+
+	if (hold && !wait_event_timeout(dk->frame_wq, !decon_frame_running(dk),
+					msecs_to_jiffies(50)))
+		dev_warn_ratelimited(dk->drm.dev, "a frame did not end in 50 ms\n");
+}
+EXPORT_SYMBOL_GPL(exynos9820_decon_hold_frames);
 
 static int dsim_wait_clear(struct decon_kms *dk, u32 bits)
 {
@@ -957,6 +1013,9 @@ static int decon_drm_init(struct decon_kms *dk, struct drm_bridge *bridge)
 	ret = devm_request_irq(dev, dk->irq, decon_irq, 0, dev_name(dev), dk);
 	if (ret)
 		return ret;
+	/* FRAME_DONE too, for exynos9820_decon_hold_frames(); S-Boot enables FRAME_START */
+	drm_dbg_driver(drm, "interrupt enable was 0x%08x\n", readl(dk->decon + DECON_INTERRUPT_ENABLE));
+	rmw(dk->decon, DECON_INTERRUPT_ENABLE, DECON_INT_FRAME_DONE, DECON_INT_FRAME_DONE);
 
 	drm_mode_config_reset(drm);
 
@@ -1034,6 +1093,8 @@ static int decon_probe(struct platform_device *pdev)
 	if (IS_ERR(dk))
 		return PTR_ERR(dk);
 	platform_set_drvdata(pdev, dk);
+	spin_lock_init(&dk->trig_lock);
+	init_waitqueue_head(&dk->frame_wq);
 
 	dk->decon = devm_platform_ioremap_resource_byname(pdev, "decon");
 	if (IS_ERR(dk->decon))

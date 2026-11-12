@@ -41,7 +41,7 @@ paths are absolute: adjust them before using it elsewhere.
 Kernel
 ======
 
-`kernel.config` is the configuration the phone runs. Modules install to `/lib/modules/7.2.13-s10e`.
+`kernel.config` is the configuration the phone runs. Modules install to `/lib/modules/7.2.15-s10e`.
 
 Services and configuration
 ==========================

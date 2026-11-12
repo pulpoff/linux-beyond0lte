@@ -44,6 +44,14 @@ config EXYNOS_PMU
 	select MFD_CORE
 	select REGMAP_MMIO
 
+config EXYNOS9820_SLEEP
+	bool "Exynos 9820 system sleep (suspend to RAM)"
+	depends on ARCH_EXYNOS && ARM64 && SUSPEND && EXYNOS_PMU && ARM_PSCI_FW
+	help
+	  Suspend to RAM ("deep") on the Exynos 9820: the PMU armed for the
+	  firmware's SYS_SLEEP, then a PSCI CPU_SUSPEND for the whole system.
+	  It stays off until exynos9820_sleep.mode is set.
+
 # There is no need to enable these drivers for ARMv8
 config EXYNOS_PMU_ARM_DRIVERS
 	bool "Exynos PMU ARMv7-specific driver extensions" if COMPILE_TEST

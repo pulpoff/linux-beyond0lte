@@ -8,7 +8,11 @@
 // amp on slot 0, loudspeaker amp on slot 1. ABOX provides the clocks on both.
 //
 // MCLK1 is the PMU CLKOUT0 pad set to the 26 MHz TCXO. FLL1 locks to it and
-// runs SYSCLK at 98.304 MHz, as the stock kernel does.
+// runs SYSCLK at 98.304 MHz, as the stock kernel does, but only while the
+// codec is up: a running FLL holds a runtime PM reference on the codec, and
+// with FLL1 started once at probe the codec never slept. Its DCVDD stayed on
+// into the SoC sleep, which takes it away: the codec rebooted behind its
+// driver (BOOT_DONE pending, nobody to clear it) and its IRQ never let go.
 
 #include <linux/mfd/madera/core.h>
 #include <linux/module.h>
@@ -23,14 +27,18 @@
 #define S10E_MCLK1_RATE		26000000U
 #define S10E_SYSCLK_RATE	98304000U
 
-static int s10e_late_probe(struct snd_soc_card *card)
+static struct snd_soc_component *s10e_codec(struct snd_soc_card *card)
 {
 	struct snd_soc_pcm_runtime *rtd;
-	struct snd_soc_component *codec;
-	int ret;
 
 	rtd = snd_soc_get_pcm_runtime(card, &card->dai_link[0]);
-	codec = snd_soc_rtd_to_codec(rtd, 0)->component;
+	return snd_soc_rtd_to_codec(rtd, 0)->component;
+}
+
+static int s10e_start_sysclk(struct snd_soc_card *card)
+{
+	struct snd_soc_component *codec = s10e_codec(card);
+	int ret;
 
 	ret = snd_soc_component_set_pll(codec, MADERA_FLL1_REFCLK,
 					MADERA_FLL_SRC_MCLK1, S10E_MCLK1_RATE,
@@ -47,6 +55,46 @@ static int s10e_late_probe(struct snd_soc_card *card)
 		dev_err(card->dev, "Failed to set SYSCLK: %d\n", ret);
 
 	return ret;
+}
+
+static int s10e_stop_sysclk(struct snd_soc_card *card)
+{
+	struct snd_soc_component *codec = s10e_codec(card);
+	int ret;
+
+	ret = snd_soc_component_set_sysclk(codec, MADERA_CLK_SYSCLK_1,
+					   MADERA_CLK_SRC_FLL1, 0,
+					   SND_SOC_CLOCK_IN);
+	if (ret)
+		dev_err(card->dev, "Failed to stop SYSCLK: %d\n", ret);
+
+	ret = snd_soc_component_set_pll(codec, MADERA_FLL1_REFCLK, 0, 0, 0);
+	if (ret)
+		dev_err(card->dev, "Failed to stop FLL1: %d\n", ret);
+
+	return ret;
+}
+
+/* the codec's own bias: SYSCLK from the way out of OFF until it is back there */
+static int s10e_set_bias_level(struct snd_soc_card *card,
+			       struct snd_soc_dapm_context *dapm,
+			       enum snd_soc_bias_level level)
+{
+	if (snd_soc_dapm_to_dev(dapm) != s10e_codec(card)->dev)
+		return 0;
+
+	switch (level) {
+	case SND_SOC_BIAS_STANDBY:
+		if (snd_soc_dapm_get_bias_level(dapm) == SND_SOC_BIAS_OFF)
+			return s10e_start_sysclk(card);
+		break;
+	case SND_SOC_BIAS_OFF:
+		return s10e_stop_sysclk(card);
+	default:
+		break;
+	}
+
+	return 0;
 }
 
 static const struct snd_soc_dapm_widget s10e_widgets[] = {
@@ -181,7 +229,7 @@ static struct snd_soc_card s10e_card = {
 	.num_dapm_routes = ARRAY_SIZE(s10e_routes),
 	.controls = s10e_controls,
 	.num_controls = ARRAY_SIZE(s10e_controls),
-	.late_probe = s10e_late_probe,
+	.set_bias_level = s10e_set_bias_level,
 };
 
 static int s10e_madera_probe(struct platform_device *pdev)

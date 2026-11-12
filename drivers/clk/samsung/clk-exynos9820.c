@@ -7,10 +7,16 @@
  */
 
 #include <linux/clk-provider.h>
+#include <linux/cpuhotplug.h>
+#include <linux/io.h>
 #include <linux/mod_devicetable.h>
 #include <linux/of.h>
+#include <linux/of_address.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
+
+#include <asm/cputype.h>
+#include <asm/smp_plat.h>
 
 #include <dt-bindings/clock/exynos9820.h>
 
@@ -805,6 +811,11 @@ static const struct samsung_cmu_info peric0_cmu_info __initconst = {
 #define CLK_CON_GAT_GOUT_BLK_PERIC1_UID_I2C_CAM3_IPCLKPORT_PCLK		0x2050
 #define CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI08_I2C_IPCLKPORT_IPCLK	0x20c0
 #define CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI08_I2C_IPCLKPORT_PCLK	0x20c4
+#define PLL_CON0_MUX_CLKCMU_PERIC1_USI08_USI_USER			0x0220
+#define CLK_CON_DIV_DIV_CLK_PERIC1_USI08_USI				0x1820
+#define CLK_CON_GAT_GOUT_BLK_PERIC1_UID_RSTNSYNC_CLK_PERIC1_USI08_USI_IPCLKPORT_CLK	0x2070
+#define CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI08_USI_IPCLKPORT_IPCLK	0x20c8
+#define CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI08_USI_IPCLKPORT_PCLK	0x20cc
 #define CLK_CON_DIV_DIV_CLK_PERIC1_I2C_CAM1				0x1804
 #define CLK_CON_DIV_DIV_CLK_PERIC1_USI10_USI				0x1828
 #define CLK_CON_GAT_CLK_BLK_PERIC1_UID_RSTNSYNC_CLK_PERIC1_I2C_CAM1_IPCLKPORT_CLK	0x200c
@@ -872,6 +883,11 @@ static const unsigned long peric1_clk_regs[] __initconst = {
 	CLK_CON_GAT_GOUT_BLK_PERIC1_UID_I2C_CAM3_IPCLKPORT_PCLK,
 	CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI08_I2C_IPCLKPORT_IPCLK,
 	CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI08_I2C_IPCLKPORT_PCLK,
+	PLL_CON0_MUX_CLKCMU_PERIC1_USI08_USI_USER,
+	CLK_CON_DIV_DIV_CLK_PERIC1_USI08_USI,
+	CLK_CON_GAT_GOUT_BLK_PERIC1_UID_RSTNSYNC_CLK_PERIC1_USI08_USI_IPCLKPORT_CLK,
+	CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI08_USI_IPCLKPORT_IPCLK,
+	CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI08_USI_IPCLKPORT_PCLK,
 };
 
 /* List of parent clocks for muxes in CMU_PERIC1 */
@@ -884,6 +900,7 @@ PNAME(mout_peric1_usi10_usi_user_p) = { "oscclk", "dout_cmu_peric1_ip" };
 PNAME(mout_peric1_i2c_cam2_user_p) = { "oscclk", "dout_cmu_peric1_ip" };
 PNAME(mout_peric1_i2c_cam0_user_p) = { "oscclk", "dout_cmu_peric1_ip" };
 PNAME(mout_peric1_i2c_cam3_user_p) = { "oscclk", "dout_cmu_peric1_ip" };
+PNAME(mout_peric1_usi08_usi_user_p) = { "oscclk", "dout_cmu_peric1_ip" };
 
 static const struct samsung_mux_clock peric1_mux_clks[] __initconst = {
 	MUX(CLK_MOUT_PERIC1_BUS_USER, "mout_peric1_bus_user",
@@ -912,6 +929,9 @@ static const struct samsung_mux_clock peric1_mux_clks[] __initconst = {
 	MUX(CLK_MOUT_PERIC1_I2C_CAM3_USER, "mout_peric1_i2c_cam3_user",
 	    mout_peric1_i2c_cam3_user_p,
 	    PLL_CON0_MUX_CLKCMU_PERIC1_I2C_CAM3_USER, 4, 1),
+	MUX(CLK_MOUT_PERIC1_USI08_USI_USER, "mout_peric1_usi08_usi_user",
+	    mout_peric1_usi08_usi_user_p,
+	    PLL_CON0_MUX_CLKCMU_PERIC1_USI08_USI_USER, 4, 1),
 };
 
 static const struct samsung_div_clock peric1_div_clks[] __initconst = {
@@ -936,6 +956,9 @@ static const struct samsung_div_clock peric1_div_clks[] __initconst = {
 	    0, 4),
 	DIV(CLK_DOUT_PERIC1_I2C_CAM3, "dout_peric1_i2c_cam3",
 	    "mout_peric1_i2c_cam3_user", CLK_CON_DIV_DIV_CLK_PERIC1_I2C_CAM3,
+	    0, 4),
+	DIV(CLK_DOUT_PERIC1_USI08_USI, "dout_peric1_usi08_usi",
+	    "mout_peric1_usi08_usi_user", CLK_CON_DIV_DIV_CLK_PERIC1_USI08_USI,
 	    0, 4),
 };
 
@@ -1026,6 +1049,16 @@ static const struct samsung_gate_clock peric1_gate_clks[] __initconst = {
 	GATE(CLK_GOUT_PERIC1_USI08_I2C_PCLK, "gout_peric1_usi08_i2c_pclk",
 	     "mout_peric1_bus_user",
 	     CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI08_I2C_IPCLKPORT_PCLK, 21, 0, 0),
+	GATE(CLK_GOUT_PERIC1_USI08_USI_CLK, "gout_peric1_usi08_usi_clk",
+	     "dout_peric1_usi08_usi",
+	     CLK_CON_GAT_GOUT_BLK_PERIC1_UID_RSTNSYNC_CLK_PERIC1_USI08_USI_IPCLKPORT_CLK,
+	     21, CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_PERIC1_USI08_USI_IPCLK, "gout_peric1_usi08_usi_ipclk",
+	     "dout_peric1_usi08_usi",
+	     CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI08_USI_IPCLKPORT_IPCLK, 21, 0, 0),
+	GATE(CLK_GOUT_PERIC1_USI08_USI_PCLK, "gout_peric1_usi08_usi_pclk",
+	     "mout_peric1_bus_user",
+	     CLK_CON_GAT_GOUT_BLK_PERIC1_UID_USI08_USI_IPCLKPORT_PCLK, 21, 0, 0),
 };
 
 static const struct samsung_cmu_info peric1_cmu_info __initconst = {
@@ -4211,18 +4244,43 @@ static const struct samsung_cmu_info cpucl0_cmu_info __initconst = {
  */
 #define CPUCL2_CMU_CPUCL2_CONTROLLER_OPTION		0x0800
 
-static const unsigned long cpucl2_clk_regs[] __initconst = {
-	CPUCL2_CMU_CPUCL2_CONTROLLER_OPTION,
-};
-
+/*
+ * No clk_regs, so not in the syscore save and restore: CMU_CPUCL2 is inside the big cores' cluster, which a SoC
+ * sleep powers down and only a big core's CPU_ON powers up again, after syscore resume. Restoring it there was an
+ * SError (2026-11-08). Its one saved register, the option, goes back as a big core comes online instead.
+ */
 static const struct samsung_cmu_info cpucl2_cmu_info __initconst = {
-	.clk_regs		= cpucl2_clk_regs,
-	.nr_clk_regs		= ARRAY_SIZE(cpucl2_clk_regs),
 	.auto_clock_gate	= true,
 	.gate_dbg_offset	= EXYNOS9820_GATE_DBG_OFFSET,
 	.option_offset		= CPUCL2_CMU_CPUCL2_CONTROLLER_OPTION,
 	.drcg_offset		= EXYNOS9820_DRCG_EN_OFFSET,
 };
+
+/* CMU_CPUCL2's option as it was set at boot, for after the cluster has been down (see cpucl2_cmu_info) */
+static void __iomem *cpucl2_option;
+static u32 cpucl2_option_val;
+
+static int exynos9820_cpucl2_online(unsigned int cpu)
+{
+	/* runs on @cpu: a big core (cpu@100, cpu@101: affinity level 1 is 1) has the cluster up */
+	if (MPIDR_AFFINITY_LEVEL(cpu_logical_map(cpu), 1) == 1)
+		writel(cpucl2_option_val, cpucl2_option);
+	return 0;
+}
+
+static int __init exynos9820_cpucl2_keep_option(struct device_node *np)
+{
+	void __iomem *base = of_iomap(np, 0);
+	int ret;
+
+	if (!base)
+		return -ENOMEM;
+	cpucl2_option = base + CPUCL2_CMU_CPUCL2_CONTROLLER_OPTION;
+	cpucl2_option_val = readl(cpucl2_option);
+	ret = cpuhp_setup_state_nocalls(CPUHP_AP_ONLINE_DYN, "clk/exynos9820-cpucl2:online",
+					exynos9820_cpucl2_online, NULL);
+	return ret < 0 ? ret : 0;
+}
 
 static int __init exynos9820_cmu_probe(struct platform_device *pdev)
 {
@@ -4234,6 +4292,8 @@ static int __init exynos9820_cmu_probe(struct platform_device *pdev)
 	if (info == &mfc_cmu_info || info == &isppre_cmu_info)
 		return exynos_arm64_register_cmu_pm(pdev, true);
 	exynos_arm64_register_cmu(dev, dev->of_node, info);
+	if (info == &cpucl2_cmu_info && exynos9820_cpucl2_keep_option(dev->of_node))
+		dev_warn(dev, "the option is not restored after a SoC sleep\n");
 
 	return 0;
 }

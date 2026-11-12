@@ -20,6 +20,7 @@
  */
 #define CPU_INFORM_CLEAR	0
 #define CPU_INFORM_C2		1
+#define CPU_INFORM_CPD		2	/* the cluster's last CPU: the cluster goes down too */
 
 struct regmap_access_table;
 
@@ -42,6 +43,7 @@ struct exynos_pmu_context {
 	unsigned long *in_cpuhp;
 	bool sys_insuspend;
 	bool sys_inreboot;
+	bool sys_insleep;	/* in a system sleep's syscore (exynos9820-sleep) */
 	int cpuhp_prepare_state;
 	int cpuhp_power_up;
 	int cpuhp_power_down;
@@ -108,6 +110,8 @@ extern const struct exynos_pmu_data exynos5420_pmu_data;
 extern const struct exynos_pmu_data gs101_pmu_data;
 extern const struct exynos_pmu_data exynos850_pmu_data;
 extern const struct exynos_pmu_data exynos9820_pmu_data;
+
+void exynos_pmu_set_system_sleep(bool on);
 
 extern void pmu_raw_writel(u32 val, u32 offset);
 extern u32 pmu_raw_readl(u32 offset);

@@ -132,6 +132,29 @@
 /* PMU: AUD pads are held in retention after the domain powers on */
 #define PMU_PAD_RETENTION_AUD		0x1920
 #define PMU_PAD_RETENTION_RELEASE	BIT(11)
+/* s10e-arm-reset's mark: a crash from here on resets into U-Boot, not upload mode */
+#define PMU_INFORM3			0x080c
+#define PMU_INFORM3_ARMED		0x12345674
+
+/*
+ * The CMU_AUD registers stock's pmucal saves before every AUD power-off and
+ * writes back after every power-on (aud_save, flexpmu_cal_local_exynos9820.h):
+ * the Q-channel controls, HCHGEN_CLKMUX and CONTROLLER_OPTION. Read once in
+ * abox_probe as S-Boot left them, before the first power-off, and written back
+ * on every runtime resume. CONTROLLER_OPTION is the one that differs: S-Boot
+ * leaves 0xf0000000 (the CMU's automatic clock gating and its side of the
+ * PMU's power-down handshake), a power cycle resets it to 0, and without it the
+ * next power-off never finished (STATES stuck at 0x15, "AUD disable failed":
+ * only the first power-off of a boot ever worked), and a system sleep left the
+ * block unreachable (2026-11-08). 0xf1000000, a guess, locked the SoC up once.
+ */
+static const u16 cmu_aud_qch[] = {
+	0x3000, 0x3004, 0x3008, 0x300c, 0x3020, 0x3024, 0x3028, 0x302c,
+	0x3030, 0x3034, 0x3038, 0x3040, 0x3044, 0x3048, 0x304c, 0x3050,
+	0x3054, 0x3058, 0x305c, 0x3060, 0x3064, 0x3068, 0x306c, 0x3070,
+	0x3074, 0x0850,
+};
+#define CMU_CONTROLLER_OPTION		0x0800
 
 #define ABOX_UAIF_MIC			0	/* UAIF0: I2S to the codec AIF1 */
 #define ABOX_UAIF_SPK			1	/* UAIF1: the amp TDM bus */
@@ -298,6 +321,12 @@ struct abox {
 		bool fw_link;		/* one of calliope's links (RDMA0/WDMA1) */
 	} dma[3];			/* + [ABOX_DMA_UL] RDMA6, the call uplink */
 
+	/* cmu_aud_qch as S-Boot left them, if they could be read (abox_probe) */
+	u32 qch_boot[ARRAY_SIZE(cmu_aud_qch)];
+	u32 option_boot;
+	bool qch_saved;
+	bool qch_logged;
+
 	/* "Call Downlink": RDMA4's ring, copied out on a timer */
 	struct abox_tap {
 		struct snd_pcm_substream *substream;
@@ -392,6 +421,17 @@ static int abox_cmu_div(struct abox *abox, u32 reg, u32 ratio)
 					 !(val & CMU_DIV_BUSY), 1, 1000);
 }
 
+static void abox_log_cmu(struct abox *abox, const char *what)
+{
+	u32 v[ARRAY_SIZE(cmu_aud_qch)];
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(cmu_aud_qch); i++)
+		v[i] = readl(abox->cmu + cmu_aud_qch[i]);
+	dev_info(abox->dev, "%s: option %08x, qch %*ph\n", what,
+		 readl(abox->cmu + CMU_CONTROLLER_OPTION), (int)sizeof(v), v);
+}
+
 static int abox_cmu_init(struct abox *abox)
 {
 	u32 val;
@@ -429,6 +469,19 @@ static int abox_cmu_init(struct abox *abox)
 	/* UAIF BCLK from DIV_CLK_AUD_UAIFn, not from the pad */
 	writel(0, abox->cmu + CMU_MUX_UAIF(ABOX_UAIF_MIC));
 	writel(0, abox->cmu + CMU_MUX_UAIF(ABOX_UAIF_SPK));
+
+	/* the Q-channels last, after the clocks, as stock's restore does */
+	if (abox->qch_saved) {
+		int i;
+
+		if (!abox->qch_logged) {
+			abox->qch_logged = true;
+			abox_log_cmu(abox, "CMU_AUD after the power cycle");
+		}
+		for (i = 0; i < ARRAY_SIZE(cmu_aud_qch); i++)
+			writel(abox->qch_boot[i], abox->cmu + cmu_aud_qch[i]);
+		writel(abox->option_boot, abox->cmu + CMU_CONTROLLER_OPTION);
+	}
 	return 0;
 }
 
@@ -513,6 +566,16 @@ static int abox_runtime_suspend(struct device *dev)
 	pinctrl_select_state(abox->pinctrl, abox->pins_idle);
 	abox_trace(abox, "suspend: syspower off\n");
 	abox_writel(abox, ABOX_SYSPOWER_CTRL, 0);
+	/*
+	 * PLL_AUD0 off, its mux back on OSCCLK first, as stock does by
+	 * disabling the PLL clock. Left running, it kept the domain from ever
+	 * powering down after the first resume (PMU STATES stuck at 0x15,
+	 * "AUD disable failed"), and a system sleep then left the whole block
+	 * unreachable (2026-11-08).
+	 */
+	abox_trace(abox, "suspend: PLL_AUD0 off\n");
+	writel(AUD_PLL_CON0, abox->cmu + CMU_PLL_CON0_AUD0);
+	writel(AUD_PLL_CON0 & ~CMU_PLL_ENABLE, abox->cmu + CMU_PLL_CON0_AUD0);
 	abox_trace(abox, "suspend: done\n");
 	return 0;
 }
@@ -2639,6 +2702,27 @@ static int abox_probe(struct platform_device *pdev)
 	if (IS_ERR(abox->pmu))
 		return dev_err_probe(dev, PTR_ERR(abox->pmu), "no PMU syscon\n");
 
+	/*
+	 * CMU_AUD as S-Boot left it, the one read before the first power cycle
+	 * (stock reads the same registers at that point, pmucal_local_disable);
+	 * only with the reset mark set, so a fault cannot land in upload mode.
+	 */
+	{
+		unsigned int inform3 = 0;
+		int i;
+
+		regmap_read(abox->pmu, PMU_INFORM3, &inform3);
+		if (inform3 == PMU_INFORM3_ARMED) {
+			for (i = 0; i < ARRAY_SIZE(cmu_aud_qch); i++)
+				abox->qch_boot[i] = readl(abox->cmu + cmu_aud_qch[i]);
+			abox->option_boot = readl(abox->cmu + CMU_CONTROLLER_OPTION);
+			abox->qch_saved = true;
+			abox_log_cmu(abox, "CMU_AUD as S-Boot left it");
+		} else {
+			dev_warn(dev, "reset mark not set yet: CMU_AUD Q-channels not saved\n");
+		}
+	}
+
 	abox->pinctrl = devm_pinctrl_get(dev);
 	if (IS_ERR(abox->pinctrl))
 		return dev_err_probe(dev, PTR_ERR(abox->pinctrl), "no pinctrl\n");
@@ -2707,7 +2791,32 @@ static int abox_probe(struct platform_device *pdev)
 					       ARRAY_SIZE(abox_dais));
 }
 
+/*
+ * A system sleep that comes while ABOX is still runtime-active (a sound in
+ * the last few seconds: PipeWire keeps the PCM open ~5 s, then the 3 s
+ * autosuspend) must take it down the runtime path too. genpd powers AUD off
+ * in suspend_noirq whatever the device's runtime state; with PLL_AUD0 still
+ * running that power-off never completed, and the TZPC restore SMC after
+ * "AUD disable failed" was an SError panic (2026-11-09, an s2idle 6 s after
+ * a USB unplug woke the phone). Late, after the card has stopped its streams.
+ *
+ * That alone is not enough yet: after such a sleep the next stream never ran
+ * (pw-play timed out, the shell hung on it). Until the stream state comes back
+ * too, a sleep is refused while ABOX is active; s10e-sleepd tries again a
+ * second later, and the autosuspend lets it through within seconds.
+ */
+static int abox_prepare(struct device *dev)
+{
+	if (!pm_runtime_status_suspended(dev)) {
+		dev_info(dev, "active, the system sleep waits\n");
+		return -EBUSY;
+	}
+	return 0;
+}
+
 static const struct dev_pm_ops abox_pm_ops = {
+	.prepare = pm_sleep_ptr(abox_prepare),
+	LATE_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend, pm_runtime_force_resume)
 	RUNTIME_PM_OPS(abox_runtime_suspend, abox_runtime_resume, NULL)
 };
 

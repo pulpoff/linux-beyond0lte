@@ -270,6 +270,12 @@ static int exynos_cpu_pmu_offline(void)
 	raw_spin_lock(&pmu_context->cpupm_lock);
 	cpu = smp_processor_id();
 
+	/* CPU0's own, in a system sleep's syscore: no C2, the sleep driver arms the PMU for the SoC's sleep */
+	if (pmu_context->sys_insleep) {
+		raw_spin_unlock(&pmu_context->cpupm_lock);
+		return NOTIFY_OK;
+	}
+
 	if (test_bit(cpu, pmu_context->in_cpuhp)) {
 		raw_spin_unlock(&pmu_context->cpupm_lock);
 		return NOTIFY_BAD;
@@ -587,6 +593,16 @@ static int exynos_pmu_probe(struct platform_device *pdev)
 
 	dev_dbg(dev, "Exynos PMU Driver probe done\n");
 	return 0;
+}
+
+/* exynos9820-sleep, from its syscore, with only CPU0 up and IRQs off */
+void exynos_pmu_set_system_sleep(bool on)
+{
+	if (!pmu_context)
+		return;
+	raw_spin_lock(&pmu_context->cpupm_lock);
+	pmu_context->sys_insleep = on;
+	raw_spin_unlock(&pmu_context->cpupm_lock);
 }
 
 static int exynos_cpupm_suspend_noirq(struct device *dev)

@@ -125,6 +125,18 @@ config LEDS_S2M_FLASH
 	  dedicated for every physical LED. The LEDs can be controlled in flash
 	  and torch modes.
 
+config LEDS_S2MPB02_FLASH
+	tristate "Samsung S2MPB02 camera PMIC flash/torch LED"
+	depends on LEDS_CLASS_FLASH
+	depends on REGULATOR_S2MPB02
+	help
+	  The flash LED of the Samsung S2MPB02 camera PMIC (Exynos 9820
+	  phones): torch through the LED's brightness, flash through its
+	  flash_strobe.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called leds-s2mpb02.
+
 config LEDS_SGM3140
 	tristate "LED support for the SGM3140"
 	depends on V4L2_FLASH_LED_CLASS || !V4L2_FLASH_LED_CLASS

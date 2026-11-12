@@ -364,10 +364,19 @@ static int __maybe_unused madera_runtime_suspend(struct device *dev)
 	return 0;
 }
 
+/*
+ * System sleep goes through the runtime callbacks. With runtime callbacks
+ * only, the PM core takes the device for one without PM callbacks, enables
+ * "smart suspend" for it and marks it active after a system resume without
+ * calling madera_runtime_resume(): DCVDD stays off, the regmaps stay
+ * cache-only, and the next runtime suspend disables DCVDD a second time.
+ */
 const struct dev_pm_ops madera_pm_ops = {
 	SET_RUNTIME_PM_OPS(madera_runtime_suspend,
 			   madera_runtime_resume,
 			   NULL)
+	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
+				pm_runtime_force_resume)
 };
 EXPORT_SYMBOL_GPL(madera_pm_ops);
 

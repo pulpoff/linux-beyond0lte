@@ -1367,7 +1367,14 @@ reboot:
 					shub_ctl_watch(h, ret);
 			}
 		}
-		if (h->spi_errors >= SHUB_SPI_ERRORS_MAX) {
+		/*
+		 * resume_reset too, on its own: a transfer that worked after the
+		 * failure that set it cleared spi_errors again, so this never ran,
+		 * resume_reset stayed set and the wait above stopped sleeping:
+		 * 62,000 empty polls a second for hours, with the wakeup source
+		 * held, so the phone never slept and ran hot (2026-11-05).
+		 */
+		if (h->spi_errors >= SHUB_SPI_ERRORS_MAX || h->resume_reset) {
 			/*
 			 * After a long s2idle the s3c64xx controller can come
 			 * back clocking nothing (every transfer -EIO, RX FIFO
@@ -1404,6 +1411,8 @@ reboot:
 		for (i = 0; i < 32; i++) {
 			ret = shub_ssi_read(h);
 			shub_ctl_watch(h, ret);
+			if (h->resume_reset)
+				break;
 			if (ret <= 0 && !gpiod_get_value(h->host_req))
 				break;
 		}

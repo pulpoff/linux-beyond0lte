@@ -910,6 +910,7 @@ config DRM_PANEL_SAMSUNG_S6E3FA7_BEYOND0
 	tristate "Samsung S6E3FA7 panel of the Galaxy S10e"
 	depends on OF
 	depends on DRM_MIPI_DSI
+	depends on DRM_EXYNOS9820_DECON_KMS
 	depends on BACKLIGHT_CLASS_DEVICE
 	help
 	  Say Y here for the 1080x2280 command-mode AMOLED of the Galaxy S10e

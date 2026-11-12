@@ -9,6 +9,7 @@ obj-$(CONFIG_EXYNOS_USI)	+= exynos-usi.o
 obj-$(CONFIG_EXYNOS_PMU)	+= exynos_pmu.o
 exynos_pmu-y			+= exynos-pmu.o gs101-pmu.o exynos850-pmu.o \
 				   exynos9820-pmu.o
+obj-$(CONFIG_EXYNOS9820_SLEEP)	+= exynos9820-sleep.o
 
 obj-$(CONFIG_EXYNOS_PMU_ARM_DRIVERS)	+= exynos3250-pmu.o exynos4-pmu.o \
 					exynos5250-pmu.o exynos5420-pmu.o

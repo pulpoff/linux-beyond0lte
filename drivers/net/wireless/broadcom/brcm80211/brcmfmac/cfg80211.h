@@ -333,6 +333,7 @@ struct brcmf_cfg80211_wowl {
 	bool nd_enabled;
 	bool filter_added;
 	bool filtering;
+	bool pm_saved;
 };
 
 /**

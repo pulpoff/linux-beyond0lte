@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Samsung S2MPB02 camera PMIC: 18 LDOs, two bucks and a buck-boost (the flash
- * LED driver in the same chip is not handled here). Register map from
- * Samsung's downstream s2mpb02 driver.
+ * Samsung S2MPB02 camera PMIC: 18 LDOs, two bucks and a buck-boost. The flash
+ * LED in the same chip is a cell of this driver (leds-s2mpb02). Register map
+ * from Samsung's downstream s2mpb02 driver.
  *
  * Rails without a node under "regulators" get no constraints, so the core
  * never switches them; the always-on grip sensor rail stays as S-Boot left it.
  */
 
 #include <linux/i2c.h>
+#include <linux/mfd/core.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/regmap.h>
@@ -112,6 +113,10 @@ static const struct regulator_desc s2mpb02_regulators[S2MPB02_NUM] = {
 		     S2MPB02_REG_BB1CTRL1, S2MPB02_REG_BB1CTRL2, 210),
 };
 
+static const struct mfd_cell s2mpb02_cells[] = {
+	{ .name = "s2mpb02-flash", .of_compatible = "samsung,s2mpb02-flash" },
+};
+
 static const struct regmap_config s2mpb02_regmap = {
 	.reg_bits	= 8,
 	.val_bits	= 8,
@@ -143,7 +148,8 @@ static int s2mpb02_probe(struct i2c_client *i2c)
 			return dev_err_probe(dev, PTR_ERR(rdev), "%s\n",
 					     s2mpb02_regulators[i].name);
 	}
-	return 0;
+	return devm_mfd_add_devices(dev, PLATFORM_DEVID_NONE, s2mpb02_cells,
+				    ARRAY_SIZE(s2mpb02_cells), NULL, 0, NULL);
 }
 
 static const struct of_device_id s2mpb02_of_match[] = {

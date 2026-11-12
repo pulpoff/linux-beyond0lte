@@ -2048,6 +2048,10 @@ static int exynos_ufs_resume(struct ufs_hba *hba, enum ufs_pm_op pm_op)
 	if (!ufshcd_is_link_active(hba))
 		phy_power_on(ufs->phy);
 
+	/* a system sleep powers the SoC down, and the sysreg with it: its IO coherency setting is gone */
+	if (pm_op == UFS_SYSTEM_PM)
+		exynos_ufs_shareability(ufs);
+
 	exynos_ufs_config_smu(ufs);
 	exynos_ufs_fmp_resume(hba);
 	return 0;
