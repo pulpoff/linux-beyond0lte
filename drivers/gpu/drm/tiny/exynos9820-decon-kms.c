@@ -132,6 +132,8 @@ struct decon_kms {
 	bool trig_masked;
 	/* the panel's command sequence under way: no frame starts (trig_lock) */
 	bool trig_held;
+	/* system sleep, the SysMMU in bypass: no frame starts (trig_lock; decon_pm_suspend) */
+	bool sleeping;
 	/* frame interrupts that came anyway, since the hold took effect (trig_lock) */
 	unsigned int held_frames;
 
@@ -173,7 +175,7 @@ static void decon_trig_kick(struct decon_kms *dk, unsigned int frames)
 
 	spin_lock_irqsave(&dk->trig_lock, flags);
 	dk->trig_frames = max(dk->trig_frames, frames);
-	if (dk->trig_masked && !dk->trig_held) {
+	if (dk->trig_masked && !dk->trig_held && !dk->sleeping) {
 		rmw(dk->decon, DECON_HW_SW_TRIG_CONTROL,
 		    DECON_HW_TRIG_MASK_DECON, 0);
 		dk->trig_masked = false;
@@ -1011,7 +1013,7 @@ unsigned int exynos9820_decon_hold_frames(struct mipi_dsi_host *host, bool hold)
 		rmw(dk->decon, DECON_HW_SW_TRIG_CONTROL,
 		    DECON_HW_TRIG_MASK_DECON, DECON_HW_TRIG_MASK_DECON);
 		dk->trig_masked = true;
-	} else if (!hold && dk->trig_masked &&
+	} else if (!hold && dk->trig_masked && !dk->sleeping &&
 		   (dk->trig_frames || dk->trig_vblank || !READ_ONCE(psr))) {
 		rmw(dk->decon, DECON_HW_SW_TRIG_CONTROL,
 		    DECON_HW_TRIG_MASK_DECON, 0);
@@ -1285,6 +1287,55 @@ static void decon_shutdown(struct platform_device *pdev)
 		drm_atomic_helper_shutdown(&dk->drm);
 }
 
+/*
+ * System sleep. SysMMU_DPUD0 is force-suspended on every system suspend (pm_runtime_force_suspend ignores our runtime
+ * reference): translation off, so bypass, and its clocks off. This pipeline is not stopped (nothing here could start
+ * it again), and a frame the TE trigger starts in that window fetches our IOVAs as physical addresses. The panel then
+ * shows that noise from its own RAM until the next update after waking (2026-11-15: now and then after the screen
+ * went off, until the power key). So the trigger stays masked from before the SysMMU suspends until after it resumes:
+ * the IOMMU's device link puts our callbacks on the right side of its.
+ */
+static int decon_pm_suspend(struct device *dev)
+{
+	struct decon_kms *dk = dev_get_drvdata(dev);
+	unsigned long flags;
+	bool running;
+
+	spin_lock_irqsave(&dk->trig_lock, flags);
+	dk->sleeping = true;
+	if (!dk->trig_masked) {
+		rmw(dk->decon, DECON_HW_SW_TRIG_CONTROL,
+		    DECON_HW_TRIG_MASK_DECON, DECON_HW_TRIG_MASK_DECON);
+		dk->trig_masked = true;
+	}
+	spin_unlock_irqrestore(&dk->trig_lock, flags);
+
+	/* a frame under way still reads through the SysMMU: it ends first */
+	if (read_poll_timeout(decon_frame_running, running, !running, 100, 50000, false, dk))
+		dev_warn(dev, "a frame did not end in 50 ms before sleep\n");
+	return 0;
+}
+
+static int decon_pm_resume(struct device *dev)
+{
+	struct decon_kms *dk = dev_get_drvdata(dev);
+	unsigned long flags;
+
+	spin_lock_irqsave(&dk->trig_lock, flags);
+	dk->sleeping = false;
+	/* frames wanted meanwhile (a commit, a vblank reference) start now */
+	if (dk->trig_masked && !dk->trig_held &&
+	    (dk->trig_frames || dk->trig_vblank || !READ_ONCE(psr))) {
+		rmw(dk->decon, DECON_HW_SW_TRIG_CONTROL,
+		    DECON_HW_TRIG_MASK_DECON, 0);
+		dk->trig_masked = false;
+	}
+	spin_unlock_irqrestore(&dk->trig_lock, flags);
+	return 0;
+}
+
+static DEFINE_SIMPLE_DEV_PM_OPS(decon_pm_ops, decon_pm_suspend, decon_pm_resume);
+
 static const struct of_device_id decon_of_match[] = {
 	{ .compatible = "samsung,exynos9820-decon-handover" },
 	{ }
@@ -1295,6 +1346,7 @@ static struct platform_driver decon_platform_driver = {
 	.driver = {
 		.name = "exynos9820-decon-kms",
 		.of_match_table = decon_of_match,
+		.pm = pm_sleep_ptr(&decon_pm_ops),
 	},
 	.probe = decon_probe,
 	.remove = decon_remove,
