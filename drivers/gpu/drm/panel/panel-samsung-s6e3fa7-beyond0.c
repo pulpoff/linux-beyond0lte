@@ -502,7 +502,7 @@ static ssize_t lpm_store(struct device *dev, struct device_attribute *attr, cons
 	if (nits == bp->lpm)
 		return len;
 	if (nits) {
-		beyond0_lpm_enter(&ctx, i);
+		return len; /* disable LPM/AOD to prevent display artifacts */
 	} else {
 		beyond0_lpm_exit(&ctx);
 		beyond0_set_aor(&ctx, backlight_get_brightness(bp->bl));
