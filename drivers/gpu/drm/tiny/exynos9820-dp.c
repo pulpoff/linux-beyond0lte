@@ -163,6 +163,11 @@ struct e9820_dp {
 	bool cec_registered;	/* ... and not detached: cec_work may run */
 	unsigned long port_state;	/* MAX77705_DP_* */
 	bool hpd_enabled;
+
+	/* the link looked at after an IRQ_HPD or HPD coming back (e9820_dp_link_work) */
+	struct delayed_work link_work;
+	unsigned int link_tries;	/* trainings in a row that did not take (lock) */
+	struct drm_display_mode mode;	/* of the stream (lock) */
 };
 
 static inline struct e9820_dp *bridge_to_dp(struct drm_bridge *b)
@@ -654,6 +659,8 @@ int exynos9820_dp_stream_on(struct drm_bridge *bridge, const struct drm_display_
 		if (ret)
 			goto err;
 	}
+	drm_mode_copy(&dp->mode, mode);
+	dp->link_tries = 0;
 	ret = e9820_dp_video(dp, true, false, mode);
 	if (ret)
 		goto err;
@@ -835,15 +842,60 @@ static void e9820_dp_hpd_work(struct work_struct *work)
 						     connector_status_disconnected);
 }
 
+/*
+ * The sink's link status, after an IRQ_HPD or HPD coming back. The dock asks for the USB host role right after the
+ * first training and resets its DP-to-HDMI converter for it: the link drops while the stream runs (lanes unlocked,
+ * "no signal" on the TV), and nothing in DRM changes to train it again (2026-11-20, every boot with the TV plugged
+ * in). A link that lost its lock is trained again where it is, the stream left running: the TV came back so.
+ */
+static void e9820_dp_link_work(struct work_struct *work)
+{
+	struct e9820_dp *dp = container_of(to_delayed_work(work), struct e9820_dp, link_work);
+	u8 status[DP_LINK_STATUS_SIZE];
+	int rate, ret;
+
+	guard(mutex)(&dp->lock);
+	if (!dp->powered || !dp->video)
+		return;
+	ret = drm_dp_dpcd_read_link_status(&dp->aux, status);
+	if (ret)
+		goto again;
+	if (dp->trained && drm_dp_channel_eq_ok(status, dp->lanes)) {
+		dp->link_tries = 0;
+		return;
+	}
+	dev_info(dp->dev, "link lost: status %*ph, training again\n", DP_LINK_STATUS_SIZE, status);
+	rate = dp->link_rate;
+	dp->trained = false;
+	ret = e9820_dp_train(dp);
+	/* the transfer units are worked out for the rate: a fallback needs them anew */
+	if (!ret && dp->link_rate != rate)
+		ret = e9820_dp_video(dp, true, false, &dp->mode);
+	if (!ret) {
+		dp->link_tries = 0;
+		return;
+	}
+again:
+	/* the dock still busy (no AUX answer, no lock): again a little later, a few times */
+	if (++dp->link_tries <= 5)
+		mod_delayed_work(system_dfl_wq, &dp->link_work, msecs_to_jiffies(250 << dp->link_tries));
+	else
+		dev_warn(dp->dev, "link not trained again: %d\n", ret);
+}
+
 static int e9820_dp_port_event(struct notifier_block *nb, unsigned long state, void *data)
 {
 	struct e9820_dp *dp = container_of(nb, struct e9820_dp, nb);
+	unsigned long old = READ_ONCE(dp->port_state);
 
 	dev_dbg(dp->dev, "port state %lx\n", state);
 	WRITE_ONCE(dp->port_state, state & ~MAX77705_DP_HPD_IRQ);
 	schedule_work(&dp->hpd_work);
 	if (state & MAX77705_DP_HPD_IRQ)
 		mod_delayed_work(system_dfl_wq, &dp->cec_work, 0);
+	/* the sink's word that its link changed, or HPD back after a drop: the last of a burst decides */
+	if (state & MAX77705_DP_HPD_IRQ || state & ~old & MAX77705_DP_HPD)
+		mod_delayed_work(system_dfl_wq, &dp->link_work, msecs_to_jiffies(100));
 	return NOTIFY_OK;
 }
 
@@ -1118,6 +1170,7 @@ static int e9820_dp_probe(struct platform_device *pdev)
 
 	INIT_WORK(&dp->hpd_work, e9820_dp_hpd_work);
 	INIT_DELAYED_WORK(&dp->cec_work, e9820_dp_cec_work);
+	INIT_DELAYED_WORK(&dp->link_work, e9820_dp_link_work);
 	dp->lanes = 2;
 	dp->bridge.of_node = dev->of_node;
 	dp->bridge.type = DRM_MODE_CONNECTOR_DisplayPort;
@@ -1136,6 +1189,7 @@ static void e9820_dp_remove(struct platform_device *pdev)
 
 	max77705_dp_unregister_notifier(&dp->nb);
 	cancel_work_sync(&dp->hpd_work);
+	cancel_delayed_work_sync(&dp->link_work);
 	WRITE_ONCE(dp->cec_registered, false);
 	cancel_delayed_work_sync(&dp->cec_work);
 	debugfs_remove_recursive(dp->debugfs);

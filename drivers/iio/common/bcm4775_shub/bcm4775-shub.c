@@ -268,11 +268,22 @@ struct shub {
 	struct work_struct compass_work;
 	s32 heading;			/* millidegrees from magnetic north */
 	struct delayed_work idle_work;
+	/*
+	 * Set by remove() first: nothing queues idle_work after that. An IIO read
+	 * between remove()'s cancel and the devm unregister of the IIO device
+	 * re-queued it, and it ran a second later on a freed hub (a NULL oops in
+	 * spi_sync on a kworker, 2026-11-19): that kworker's pool then never ran
+	 * anything again, the haptic's stop among it, and the motor ran on.
+	 */
+	spinlock_t q_lock;
+	bool dying;
 	struct work_struct init_work;
 	struct completion booted;
 };
 
 enum { SSP_HDR, SSP_READ, SSP_FRAME };
+
+static void shub_queue_idle(struct shub *h);
 
 /* ---------------------------------------------------------------- SSI */
 
@@ -1339,7 +1350,7 @@ reboot:
 		if (ret)
 			dev_warn(dev, "compass did not start: %d\n", ret);
 		else
-			queue_delayed_work(system_freezable_wq, &h->idle_work, HZ);
+			shub_queue_idle(h);
 	}
 	mutex_unlock(&h->sens_lock);
 
@@ -1435,6 +1446,14 @@ static irqreturn_t shub_irq(int irq, void *arg)
 	return IRQ_HANDLED;
 }
 
+static void shub_queue_idle(struct shub *h)
+{
+	spin_lock(&h->q_lock);
+	if (!h->dying)
+		queue_delayed_work(system_freezable_wq, &h->idle_work, HZ);
+	spin_unlock(&h->q_lock);
+}
+
 static void shub_idle_work(struct work_struct *w)
 {
 	struct shub *h = container_of(to_delayed_work(w), struct shub, idle_work);
@@ -1457,7 +1476,7 @@ static void shub_idle_work(struct work_struct *w)
 	}
 	mutex_unlock(&h->sens_lock);
 	if (any)
-		queue_delayed_work(system_freezable_wq, &h->idle_work, HZ);
+		shub_queue_idle(h);
 }
 
 /* ---------------------------------------------------------------- IIO */
@@ -1467,6 +1486,8 @@ static int shub_get_sample(struct shub_sensor *s, u8 *out, unsigned int n)
 	struct shub *h = s->hub;
 	int ret;
 
+	if (READ_ONCE(h->dying))
+		return -ENODEV;
 	if (!completion_done(&h->booted) || !h->ready)
 		return -EAGAIN;
 	if (!(h->present & BIT_ULL(s->type)))
@@ -1477,7 +1498,7 @@ static int shub_get_sample(struct shub_sensor *s, u8 *out, unsigned int n)
 	mutex_unlock(&h->sens_lock);
 	if (ret)
 		return ret;
-	queue_delayed_work(system_freezable_wq, &h->idle_work, HZ);
+	shub_queue_idle(h);
 	wake_up(&h->kick);
 	if (!wait_event_timeout(s->wait, s->have_sample,
 				msecs_to_jiffies(SHUB_FIRST_SAMPLE_MS)))
@@ -1674,7 +1695,7 @@ static int shub_compass_set(struct iio_dev *indio, bool on)
 	h->compass_want = on;
 	h->compass_on = false;
 	/* iio-sensor-proxy starts before the hub boots: the thread picks it up */
-	if (!completion_done(&h->booted) || !h->ready) {
+	if (READ_ONCE(h->dying) || !completion_done(&h->booted) || !h->ready) {
 		mutex_unlock(&h->sens_lock);
 		return 0;
 	}
@@ -1688,7 +1709,7 @@ static int shub_compass_set(struct iio_dev *indio, bool on)
 	}
 	mutex_unlock(&h->sens_lock);
 	if (on && !ret) {
-		queue_delayed_work(system_freezable_wq, &h->idle_work, HZ);
+		shub_queue_idle(h);
 		wake_up(&h->kick);
 	}
 	return ret;
@@ -1789,6 +1810,7 @@ static int shub_probe(struct spi_device *spi)
 	INIT_LIST_HEAD(&h->pending);
 	init_waitqueue_head(&h->kick);
 	init_completion(&h->booted);
+	spin_lock_init(&h->q_lock);
 	INIT_DELAYED_WORK(&h->idle_work, shub_idle_work);
 	INIT_WORK(&h->compass_work, shub_compass_work);
 	tl_crc_init();
@@ -1893,6 +1915,9 @@ static void shub_remove(struct spi_device *spi)
 {
 	struct shub *h = spi_get_drvdata(spi);
 
+	spin_lock(&h->q_lock);
+	WRITE_ONCE(h->dying, true);
+	spin_unlock(&h->q_lock);
 	kthread_stop(h->thread);
 	cancel_work_sync(&h->compass_work);
 	cancel_delayed_work_sync(&h->idle_work);

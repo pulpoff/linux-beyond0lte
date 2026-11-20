@@ -15,24 +15,24 @@ Use the `main` branch; every update is one commit of the whole tree, this README
 New in this version
 ===================
 
-* **The wide camera takes 4:3 photos again.** The S5K2L4's full-size modes (4032x3024, 4032x2268) send its
-  phase detection pixels on CSI-2 virtual channel 1, which the CSIS driver does not filter yet: their frames
-  came out black or striped, and a 4:3 photo landed on 4032x2268. The sensor driver now offers them only with
-  `s5k3p9.full_modes=1`, so libcamera serves every size from the 2016x1134 and 1008x756 modes; a 4:3 photo is
-  1400x1050 until the CSIS drops VC1.
-* **Video:** a STREAMOFF no longer waits out its timeout (the frame interrupt's flags were cleared before the
-  wait looked at them), and the decoder's capture planes are whole lines of one height. 1080p was 1920 x 1088 +
-  64 luma bytes, and GStreamer's v4l2 pool threw every queued buffer away on a flushing seek.
-* **Always On Display:** an upload of the clock hands that a frame cut short is sent again, and the display
-  link's error bits (DSIM underrun, DECON timeout) are logged and cleared.
-* **Charging:** a source that drops out under the current it advertises (a PC's USB 2.0 port behind a cable
-  claiming Type-C 3.0 A) no longer makes the charger flap a dozen times a second: the input steps down 100 mA at
-  a time, to 500 mA at the least, until the cable is pulled.
-* **SoC sleep (still off):** after the PERST# brcmfmac keeps the Wi-Fi firmware when it is still running,
-  instead of reloading it (about 10 s and the association).
+* **TV through a USB-C dock: the picture comes up by itself.** Right after the first link training the dock
+  asks for the USB host role and resets its DP-to-HDMI converter for it, which drops the link while the stream
+  runs (DPCD 0x202 = 0x00). Nothing in DRM changed, so nothing trained it again, and the TV said "no signal".
+  After an IRQ_HPD, or HPD coming back high, the DP driver now reads the sink's link status and trains a link
+  that lost its lock again where it is, with the stream left running (about 20 ms).
+* **TV after a sleep:** a system sleep powered DECON2 and the DP link down without the driver knowing. The
+  DECON's system sleep ops now stop both before the SysMMU suspends and start them again on resume, in the same
+  mode and buffer, with the link trained again. Not yet tried on a wake with a TV attached.
+* **No grey noise on the panel after the screen goes off:** every system suspend force-suspends the display's
+  SysMMU into bypass, and a frame the TE trigger started in that window fetched the IOVAs as physical
+  addresses. The panel then showed that noise until the power key. The trigger now stays masked from before the
+  SysMMU suspends until after it resumes.
+* **Sensor hub:** an IIO read during the hub's removal no longer queues work on a hub being freed. That work
+  oopsed on a kworker, the kworker's pool stopped running anything, and the vibration motor's stop with it.
+  Not yet run on the phone.
 
-The previous update, Linux 7.2.15 with a steadier suspend to idle and the SoC's own sleep state, is commit
-5b7e5133 in this branch's history.
+The previous update, with 4:3 photos on the wide camera, video seeking and the charger's backoff, is commit
+cc3cd553 in this branch's history.
 
 What works
 ==========
@@ -49,7 +49,7 @@ What works
 | Sensors | accelerometer (screen rotation), ambient light, proximity and compass through the BCM4775 sensor hub, through suspend and resume |
 | Cameras | rear wide S5K2L4 with AK7375 autofocus, rear ultra-wide S5K3P9, front S5K3J1, through a new CSIS/write-DMA driver and libcamera's software ISP (tuning in `mobian/camera/`); the wide camera's full-size modes are off for now, so its photos are cut from 2016x1134 |
 | Video | MFC hardware decode: H.264, HEVC, VP9; playback carries on through an s2idle; seeking keeps the queued frames |
-| DisplayPort | USB-C DP alt mode to HDMI docks: 1080p60/120 with audio, a second CRTC on DECON2, HDMI CEC through docks that tunnel it |
+| DisplayPort | USB-C DP alt mode to HDMI docks: 1080p60/120 with audio, a second CRTC on DECON2, HDMI CEC through docks that tunnel it; the link is trained again when a dock drops it |
 | USB | device mode (networking), host mode with hubs, USB 3 SuperSpeed through docks, Type-C orientation from the MAX77705 |
 | Battery | MAX77705 charger and fuel gauge; Qi wireless charging at 5 V through the charger's WCIN input; on a 0.5 A USB port it shows as charging, as Android does; without USB PD the input limit follows the Type-C current and BC1.2 detection (up to 1.8 A), as stock does |
 | Suspend | the phone sleeps (s2idle) a few seconds after the screen goes off, whenever nothing needs it awake (`s10e-sleepd`); calls, SMS, Wi-Fi, the power key, a double tap and the charger wake it. Kernel timers stop while it sleeps (a WFI idle state for suspend to idle). About 200 mA asleep with Wi-Fi associated. The SoC's own sleep state is in the kernel but not used yet (below) |

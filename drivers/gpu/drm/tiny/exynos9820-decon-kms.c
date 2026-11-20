@@ -115,6 +115,15 @@ struct decon_kms {
 	void __iomem *vgrfs_dpp;
 	int dp_irq;
 	bool dp_running;
+	/*
+	 * System sleep powers the link and DECON2 down under us, and nothing in the atomic state changes to start them
+	 * again (2026-11-20: "no signal" on the TV after every wake). They are stopped before the SysMMU suspends and
+	 * started on resume. dp_lock orders that against the pipe's commits.
+	 */
+	struct mutex dp_lock;
+	bool dp_sleeping;		/* between decon_pm_suspend and decon_pm_resume */
+	bool dp_wake;			/* to start on resume, in dp_mode */
+	struct drm_display_mode dp_mode;
 	/* flip done once DECON2 has latched the buffer (event_lock) */
 	struct drm_pending_vblank_event *dp_event;
 	u32 dp_saved_270;
@@ -132,6 +141,8 @@ struct decon_kms {
 	bool trig_masked;
 	/* the panel's command sequence under way: no frame starts (trig_lock) */
 	bool trig_held;
+	/* system sleep, the SysMMU in bypass: no frame starts (trig_lock; decon_pm_suspend) */
+	bool sleeping;
 	/* frame interrupts that came anyway, since the hold took effect (trig_lock) */
 	unsigned int held_frames;
 
@@ -173,7 +184,7 @@ static void decon_trig_kick(struct decon_kms *dk, unsigned int frames)
 
 	spin_lock_irqsave(&dk->trig_lock, flags);
 	dk->trig_frames = max(dk->trig_frames, frames);
-	if (dk->trig_masked && !dk->trig_held) {
+	if (dk->trig_masked && !dk->trig_held && !dk->sleeping) {
 		rmw(dk->decon, DECON_HW_SW_TRIG_CONTROL,
 		    DECON_HW_TRIG_MASK_DECON, 0);
 		dk->trig_masked = false;
@@ -616,33 +627,32 @@ static void decon_dp_complete_event(struct decon_kms *dk)
 	dk->dp_event = NULL;
 }
 
-static void decon_dp_enable(struct drm_simple_display_pipe *pipe,
-			    struct drm_crtc_state *crtc_state,
-			    struct drm_plane_state *plane_state)
+/* dp_lock held */
+static int decon_dp_start(struct decon_kms *dk, const struct drm_display_mode *mode,
+			  struct drm_plane_state *plane_state)
 {
-	struct decon_kms *dk = dp_pipe_to_decon(pipe);
-	const struct drm_display_mode *mode = &crtc_state->adjusted_mode;
+	int ret;
 
 	/* downstream order: the DP stream and its LH channel first, then DECON2 */
-	if (exynos9820_dp_stream_on(dk->dp_bridge, mode))
-		return;
-	if (decon2_start(dk, mode, plane_state)) {
+	ret = exynos9820_dp_stream_on(dk->dp_bridge, mode);
+	if (ret)
+		return ret;
+	ret = decon2_start(dk, mode, plane_state);
+	if (ret) {
 		decon2_stop(dk);
 		exynos9820_dp_stream_off(dk->dp_bridge);
-		return;
+		return ret;
 	}
 	dk->dp_running = true;
-	drm_info(&dk->drm, "DisplayPort: %s@%d\n", mode->name, drm_mode_vrefresh(mode));
-	drm_crtc_vblank_on(&pipe->crtc);
+	return 0;
 }
 
-static void decon_dp_disable(struct drm_simple_display_pipe *pipe)
+/* dp_lock held: vblank off, the held flip handed back, DECON2 and the link stopped */
+static void decon_dp_stop(struct decon_kms *dk)
 {
-	struct decon_kms *dk = dp_pipe_to_decon(pipe);
-
 	unsigned long flags;
 
-	drm_crtc_vblank_off(&pipe->crtc);
+	drm_crtc_vblank_off(&dk->dp_pipe.crtc);
 	spin_lock_irqsave(&dk->drm.event_lock, flags);
 	if (dk->dp_event)
 		decon_dp_complete_event(dk);
@@ -654,6 +664,67 @@ static void decon_dp_disable(struct drm_simple_display_pipe *pipe)
 	dk->dp_running = false;
 }
 
+static void decon_dp_enable(struct drm_simple_display_pipe *pipe,
+			    struct drm_crtc_state *crtc_state,
+			    struct drm_plane_state *plane_state)
+{
+	struct decon_kms *dk = dp_pipe_to_decon(pipe);
+	const struct drm_display_mode *mode = &crtc_state->adjusted_mode;
+
+	guard(mutex)(&dk->dp_lock);
+	drm_mode_copy(&dk->dp_mode, mode);
+	if (dk->dp_sleeping) {
+		/* a commit that ran on into the system sleep: the SysMMU is off, it starts on resume */
+		dk->dp_wake = true;
+		return;
+	}
+	if (decon_dp_start(dk, mode, plane_state))
+		return;
+	drm_info(&dk->drm, "DisplayPort: %s@%d\n", mode->name, drm_mode_vrefresh(mode));
+	drm_crtc_vblank_on(&pipe->crtc);
+}
+
+static void decon_dp_disable(struct drm_simple_display_pipe *pipe)
+{
+	struct decon_kms *dk = dp_pipe_to_decon(pipe);
+
+	guard(mutex)(&dk->dp_lock);
+	dk->dp_wake = false;
+	decon_dp_stop(dk);
+}
+
+/* before the SysMMU suspends */
+static void decon_dp_suspend(struct decon_kms *dk)
+{
+	guard(mutex)(&dk->dp_lock);
+	dk->dp_sleeping = true;
+	if (!dk->dp_running)
+		return;
+	decon_dp_stop(dk);
+	dk->dp_wake = true;
+}
+
+/* after the SysMMU has resumed: the same mode and buffer as before, the link trained again */
+static void decon_dp_resume(struct decon_kms *dk)
+{
+	struct drm_plane_state *plane_state = dk->dp_pipe.plane.state;
+	const struct drm_display_mode *mode = &dk->dp_mode;
+
+	guard(mutex)(&dk->dp_lock);
+	dk->dp_sleeping = false;
+	if (!dk->dp_wake)
+		return;
+	dk->dp_wake = false;
+	if (!plane_state || !plane_state->fb || !plane_state->visible ||
+	    decon_dp_start(dk, mode, plane_state)) {
+		drm_warn(&dk->drm, "DisplayPort: not started again after sleep\n");
+		return;
+	}
+	drm_info(&dk->drm, "DisplayPort: %s@%d again after sleep\n", mode->name,
+		 drm_mode_vrefresh(mode));
+	drm_crtc_vblank_on(&dk->dp_pipe.crtc);
+}
+
 static void decon_dp_update(struct drm_simple_display_pipe *pipe,
 			    struct drm_plane_state *old_state)
 {
@@ -661,6 +732,7 @@ static void decon_dp_update(struct drm_simple_display_pipe *pipe,
 	struct drm_plane_state *state = pipe->plane.state;
 	u32 val;
 
+	guard(mutex)(&dk->dp_lock);
 	if (dk->dp_running && state->fb && state->visible) {
 		if (readl_poll_timeout(dk->decon2 + DECON_SHADOW_REG_UPDATE_REQ, val,
 				       !val, 100, 50000))
@@ -1011,7 +1083,7 @@ unsigned int exynos9820_decon_hold_frames(struct mipi_dsi_host *host, bool hold)
 		rmw(dk->decon, DECON_HW_SW_TRIG_CONTROL,
 		    DECON_HW_TRIG_MASK_DECON, DECON_HW_TRIG_MASK_DECON);
 		dk->trig_masked = true;
-	} else if (!hold && dk->trig_masked &&
+	} else if (!hold && dk->trig_masked && !dk->sleeping &&
 		   (dk->trig_frames || dk->trig_vblank || !READ_ONCE(psr))) {
 		rmw(dk->decon, DECON_HW_SW_TRIG_CONTROL,
 		    DECON_HW_TRIG_MASK_DECON, 0);
@@ -1263,6 +1335,9 @@ static int decon_probe(struct platform_device *pdev)
 	ret = devm_mutex_init(dev, &dk->dsi_lock);
 	if (ret)
 		return ret;
+	ret = devm_mutex_init(dev, &dk->dp_lock);
+	if (ret)
+		return ret;
 
 	/* the panel's probe attaches to this host, which registers the DRM device */
 	dk->dsi_host.dev = dev;
@@ -1285,6 +1360,59 @@ static void decon_shutdown(struct platform_device *pdev)
 		drm_atomic_helper_shutdown(&dk->drm);
 }
 
+/*
+ * System sleep. SysMMU_DPUD0 is force-suspended on every system suspend (pm_runtime_force_suspend ignores our runtime
+ * reference): translation off, so bypass, and its clocks off. This pipeline is not stopped (nothing here could start
+ * it again), and a frame the TE trigger starts in that window fetches our IOVAs as physical addresses. The panel then
+ * shows that noise from its own RAM until the next update after waking (2026-11-15: now and then after the screen
+ * went off, until the power key). So the trigger stays masked from before the SysMMU suspends until after it resumes:
+ * the IOMMU's device link puts our callbacks on the right side of its.
+ */
+static int decon_pm_suspend(struct device *dev)
+{
+	struct decon_kms *dk = dev_get_drvdata(dev);
+	unsigned long flags;
+	bool running;
+
+	decon_dp_suspend(dk);
+
+	spin_lock_irqsave(&dk->trig_lock, flags);
+	dk->sleeping = true;
+	if (!dk->trig_masked) {
+		rmw(dk->decon, DECON_HW_SW_TRIG_CONTROL,
+		    DECON_HW_TRIG_MASK_DECON, DECON_HW_TRIG_MASK_DECON);
+		dk->trig_masked = true;
+	}
+	spin_unlock_irqrestore(&dk->trig_lock, flags);
+
+	/* a frame under way still reads through the SysMMU: it ends first */
+	if (read_poll_timeout(decon_frame_running, running, !running, 100, 50000, false, dk))
+		dev_warn(dev, "a frame did not end in 50 ms before sleep\n");
+	return 0;
+}
+
+static int decon_pm_resume(struct device *dev)
+{
+	struct decon_kms *dk = dev_get_drvdata(dev);
+	unsigned long flags;
+
+	spin_lock_irqsave(&dk->trig_lock, flags);
+	dk->sleeping = false;
+	/* frames wanted meanwhile (a commit, a vblank reference) start now */
+	if (dk->trig_masked && !dk->trig_held &&
+	    (dk->trig_frames || dk->trig_vblank || !READ_ONCE(psr))) {
+		rmw(dk->decon, DECON_HW_SW_TRIG_CONTROL,
+		    DECON_HW_TRIG_MASK_DECON, 0);
+		dk->trig_masked = false;
+	}
+	spin_unlock_irqrestore(&dk->trig_lock, flags);
+
+	decon_dp_resume(dk);
+	return 0;
+}
+
+static DEFINE_SIMPLE_DEV_PM_OPS(decon_pm_ops, decon_pm_suspend, decon_pm_resume);
+
 static const struct of_device_id decon_of_match[] = {
 	{ .compatible = "samsung,exynos9820-decon-handover" },
 	{ }
@@ -1295,6 +1423,7 @@ static struct platform_driver decon_platform_driver = {
 	.driver = {
 		.name = "exynos9820-decon-kms",
 		.of_match_table = decon_of_match,
+		.pm = pm_sleep_ptr(&decon_pm_ops),
 	},
 	.probe = decon_probe,
 	.remove = decon_remove,
