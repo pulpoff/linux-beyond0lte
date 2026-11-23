@@ -378,6 +378,7 @@ struct brcmf_pciedev_info {
 	struct gpio_desc *wake_gpio;
 	int wake_irq;
 	atomic_t wake_armed;	/* host-wake IRQ enabled, the dongle in D3 */
+	atomic_t gone;		/* the link is dead: nothing touches the device any more */
 	u8 dma_idx_sz;
 	void *idxbuf;
 	u32 idxbuf_sz;
@@ -599,6 +600,32 @@ brcmf_pcie_read_ram32(struct brcmf_pciedev_info *devinfo, u32 mem_offset)
 }
 
 
+/*
+ * A surprise link down: every read through a dead link comes back all ones. On the S10e (BCM4375 browned out
+ * on a flat battery, 2026-11-23) the INTx handler then saw a mailbox interrupt with every bit set, the D2H rings'
+ * write indices read 0xffff, and brcmf_msgbuf_process_rx() walked off the end of the RX completion ring's buffer
+ * into unmapped vmalloc space: an oops in the IRQ thread. From the first such read on, nothing here touches the
+ * device again; the bus is down, so commands fail at once, and the PCIe host takes the device off the bus (or
+ * marks it disconnected) and scans it again once its link is back.
+ */
+static bool brcmf_pcie_gone(struct brcmf_pciedev_info *devinfo)
+{
+	return atomic_read(&devinfo->gone) || pci_dev_is_disconnected(devinfo->pdev);
+}
+
+static void brcmf_pcie_set_gone(struct brcmf_pciedev_info *devinfo, const char *what)
+{
+	struct brcmf_bus *bus = dev_get_drvdata(&devinfo->pdev->dev);
+
+	if (atomic_xchg(&devinfo->gone, 1))
+		return;
+	devinfo->state = BRCMFMAC_PCIE_STATE_DOWN;
+	if (bus)
+		brcmf_bus_change_state(bus, BRCMF_BUS_DOWN);
+	dev_err(&devinfo->pdev->dev, "the device is gone (%s), leaving it alone\n", what);
+}
+
+
 static void
 brcmf_pcie_write_ram32(struct brcmf_pciedev_info *devinfo, u32 mem_offset,
 		       u32 value)
@@ -798,6 +825,9 @@ brcmf_pcie_send_mb_data(struct brcmf_pciedev_info *devinfo, u32 htod_mb_data)
 	u32 cur_htod_mb_data;
 	u32 i;
 
+	if (brcmf_pcie_gone(devinfo))
+		return -ENODEV;
+
 	if (devinfo->mbdata_in_ring)
 		return brcmf_proto_msgbuf_send_mbdata(&devinfo->pdev->dev,
 						      htod_mb_data);
@@ -812,6 +842,10 @@ brcmf_pcie_send_mb_data(struct brcmf_pciedev_info *devinfo, u32 htod_mb_data)
 
 	i = 0;
 	while (cur_htod_mb_data != 0) {
+		if (cur_htod_mb_data == 0xffffffff) {
+			brcmf_pcie_set_gone(devinfo, "H2D mailbox data");
+			return -ENODEV;
+		}
 		msleep(10);
 		i++;
 		if (i > 100)
@@ -880,6 +914,11 @@ static void brcmf_pcie_handle_mb_data(struct brcmf_pciedev_info *devinfo)
 
 	if (!dtoh_mb_data)
 		return;
+	/* every bit, FW HALT and D3 ACK among them: a read over a dead link, not a message */
+	if (dtoh_mb_data == 0xffffffff) {
+		brcmf_pcie_set_gone(devinfo, "D2H mailbox data");
+		return;
+	}
 
 	brcmf_pcie_write_tcm32(devinfo, addr, 0);
 	brcmf_pcie_process_mb_data(devinfo, dtoh_mb_data);
@@ -933,12 +972,17 @@ static void brcmf_pcie_bus_console_read(struct brcmf_pciedev_info *devinfo,
 
 	if (!error && !BRCMF_FWCON_ON())
 		return;
+	if (brcmf_pcie_gone(devinfo))
+		return;
 
 	console = &devinfo->shared.console;
 	if (!console->base_addr)
 		return;
 	addr = console->base_addr + BRCMF_CONSOLE_WRITEIDX_OFFSET;
 	newidx = brcmf_pcie_read_tcm32(devinfo, addr);
+	/* an index past the buffer (all ones over a dead link) is never reached: this loop would not end */
+	if (newidx >= console->bufsize)
+		return;
 	while (newidx != console->read_idx) {
 		addr = console->buf_addr + console->read_idx;
 		ch = brcmf_pcie_read_tcm8(devinfo, addr);
@@ -991,8 +1035,17 @@ static void brcmf_pcie_hostready(struct brcmf_pciedev_info *devinfo)
 static irqreturn_t brcmf_pcie_quick_check_isr(int irq, void *arg)
 {
 	struct brcmf_pciedev_info *devinfo = (struct brcmf_pciedev_info *)arg;
+	u32 status;
 
-	if (brcmf_pcie_read_reg32(devinfo, devinfo->reginfo->mailboxint)) {
+	/* the line is shared with the host's own interrupts, its link down among them */
+	if (brcmf_pcie_gone(devinfo))
+		return IRQ_NONE;
+	status = brcmf_pcie_read_reg32(devinfo, devinfo->reginfo->mailboxint);
+	if (status == 0xffffffff) {
+		brcmf_pcie_set_gone(devinfo, "mailbox interrupt status");
+		return IRQ_NONE;
+	}
+	if (status) {
 		brcmf_pcie_intr_disable(devinfo);
 		brcmf_dbg(PCIE, "Enter\n");
 		return IRQ_WAKE_THREAD;
@@ -1006,9 +1059,16 @@ static irqreturn_t brcmf_pcie_isr_thread(int irq, void *arg)
 	struct brcmf_pciedev_info *devinfo = (struct brcmf_pciedev_info *)arg;
 	u32 status;
 
+	if (brcmf_pcie_gone(devinfo))
+		return IRQ_HANDLED;
 	devinfo->in_irq = true;
 	status = brcmf_pcie_read_reg32(devinfo, devinfo->reginfo->mailboxint);
 	brcmf_dbg(PCIE, "Enter %x\n", status);
+	if (status == 0xffffffff) {
+		brcmf_pcie_set_gone(devinfo, "mailbox interrupt status");
+		devinfo->in_irq = false;
+		return IRQ_HANDLED;
+	}
 	if (status) {
 		brcmf_pcie_write_reg32(devinfo, devinfo->reginfo->mailboxint,
 				       status);
@@ -1132,16 +1192,40 @@ static int brcmf_pcie_ring_mb_ring_bell(void *ctx)
 }
 
 
+/*
+ * Which ring, what was read and from where: 0xffff from the chip's memory is a link that is gone; anything else, or
+ * an index in host memory (which no dead link can touch), is the chip saying something else.
+ */
+static void brcmf_pcie_bad_index(struct brcmf_pciedev_info *devinfo, struct brcmf_pcie_ringbuf *ring,
+				 const char *which, u16 v)
+{
+	if (brcmf_pcie_gone(devinfo))
+		return;
+	dev_err(&devinfo->pdev->dev, "ring %u: %s index %#x, ring depth %u (indices in %s)\n", ring->id, which, v,
+		ring->commonring.depth, devinfo->dma_idx_sz ? "host memory" : "the chip's memory");
+}
+
 static int brcmf_pcie_ring_mb_update_rptr(void *ctx)
 {
 	struct brcmf_pcie_ringbuf *ring = (struct brcmf_pcie_ringbuf *)ctx;
 	struct brcmf_pciedev_info *devinfo = ring->devinfo;
 	struct brcmf_commonring *commonring = &ring->commonring;
+	u16 r_ptr;
 
 	if (devinfo->state != BRCMFMAC_PCIE_STATE_UP)
 		return -EIO;
 
-	commonring->r_ptr = devinfo->read_ptr(devinfo, ring->r_idx_addr);
+	/*
+	 * Only a ring that is set up can be judged: a TX flowring has depth 0 until its create worker configures it,
+	 * and the TX path asks it for room before that (an index of 0 against a depth of 0 is no dead link).
+	 */
+	r_ptr = devinfo->read_ptr(devinfo, ring->r_idx_addr);
+	if (commonring->depth && r_ptr >= commonring->depth) {
+		brcmf_pcie_bad_index(devinfo, ring, "read", r_ptr);
+		brcmf_pcie_set_gone(devinfo, "ring read index");
+		return -EIO;
+	}
+	commonring->r_ptr = r_ptr;
 
 	brcmf_dbg(PCIE, "R r_ptr %d (%d), ring %d\n", commonring->r_ptr,
 		  commonring->w_ptr, ring->id);
@@ -1155,11 +1239,19 @@ static int brcmf_pcie_ring_mb_update_wptr(void *ctx)
 	struct brcmf_pcie_ringbuf *ring = (struct brcmf_pcie_ringbuf *)ctx;
 	struct brcmf_pciedev_info *devinfo = ring->devinfo;
 	struct brcmf_commonring *commonring = &ring->commonring;
+	u16 w_ptr;
 
 	if (devinfo->state != BRCMFMAC_PCIE_STATE_UP)
 		return -EIO;
 
-	commonring->w_ptr = devinfo->read_ptr(devinfo, ring->w_idx_addr);
+	/* 0xffff over a dead link: n_items far past the ring's end (the 11-23 oops) */
+	w_ptr = devinfo->read_ptr(devinfo, ring->w_idx_addr);
+	if (commonring->depth && w_ptr >= commonring->depth) {
+		brcmf_pcie_bad_index(devinfo, ring, "write", w_ptr);
+		brcmf_pcie_set_gone(devinfo, "ring write index");
+		return -EIO;
+	}
+	commonring->w_ptr = w_ptr;
 
 	brcmf_dbg(PCIE, "R w_ptr %d (%d), ring %d\n", commonring->w_ptr,
 		  commonring->r_ptr, ring->id);
@@ -2793,7 +2885,8 @@ brcmf_pcie_remove(struct pci_dev *pdev)
 	brcmf_pcie_host_wake_free(devinfo);
 	brcmf_pcie_release_scratchbuffers(devinfo);
 	brcmf_pcie_release_ringbuffers(devinfo);
-	brcmf_pcie_reset_device(devinfo);
+	if (!brcmf_pcie_gone(devinfo))
+		brcmf_pcie_reset_device(devinfo);
 	brcmf_pcie_release_resource(devinfo);
 	release_firmware(devinfo->clm_fw);
 	release_firmware(devinfo->txcap_fw);
@@ -2824,12 +2917,19 @@ static int brcmf_pcie_pm_enter_D3(struct device *dev)
 	brcmf_pcie_fwcon_timer(devinfo, false);
 	brcmf_bus_change_state(bus, BRCMF_BUS_DOWN);
 
+	/* nothing to put to sleep; its removal is on the way (a refused D3 would only fail the system sleep) */
+	if (brcmf_pcie_gone(devinfo))
+		return 0;
+
 	devinfo->mbdata_completed = false;
 	brcmf_pcie_send_mb_data(devinfo, BRCMF_H2D_HOST_D3_INFORM);
 
 	wait_event_timeout(devinfo->mbdata_resp_wait, devinfo->mbdata_completed,
 			   BRCMF_PCIE_MBDATA_TIMEOUT);
 	if (!devinfo->mbdata_completed) {
+		/* the link went while it waited: the bus stays down */
+		if (brcmf_pcie_gone(devinfo))
+			return 0;
 		brcmf_err(bus, "Timeout on response for entering D3 substate\n");
 		brcmf_bus_change_state(bus, BRCMF_BUS_UP);
 		return -EIO;
@@ -2881,6 +2981,9 @@ static int brcmf_pcie_pm_leave_D3(struct device *dev)
 
 	if (devinfo->wake_irq > 0 && atomic_xchg(&devinfo->wake_armed, 0))
 		disable_irq(devinfo->wake_irq);
+
+	if (brcmf_pcie_gone(devinfo))
+		return 0;
 
 	/*
 	 * After PERST# the BAR0 window points at chipcommon again, whose register at intmask's offset is not 0: read

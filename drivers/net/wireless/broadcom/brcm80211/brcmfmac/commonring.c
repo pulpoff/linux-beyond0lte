@@ -207,8 +207,17 @@ void brcmf_commonring_write_cancel(struct brcmf_commonring *commonring,
 void *brcmf_commonring_get_read_ptr(struct brcmf_commonring *commonring,
 				    u16 *n_items)
 {
-	if (commonring->cr_update_wptr)
-		commonring->cr_update_wptr(commonring->cr_ctx);
+	*n_items = 0;
+	/*
+	 * No items unless both indices are inside the ring: a failed index read, or one past the ring (all ones
+	 * read over a dead PCIe link), would count items far beyond the end of buf_addr.
+	 */
+	if (commonring->cr_update_wptr &&
+	    commonring->cr_update_wptr(commonring->cr_ctx))
+		return NULL;
+	if (commonring->w_ptr >= commonring->depth ||
+	    commonring->r_ptr >= commonring->depth)
+		return NULL;
 
 	*n_items = (commonring->w_ptr >= commonring->r_ptr) ?
 				(commonring->w_ptr - commonring->r_ptr) :
