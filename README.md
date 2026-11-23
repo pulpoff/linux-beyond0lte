@@ -91,7 +91,7 @@ make ARCH=arm64 LLVM=1 LOCALVERSION= olddefconfig      # starting from mobian/ke
 make ARCH=arm64 LLVM=1 LOCALVERSION= Image modules
 ```
 
-The kernel release is `7.2.15-s10e`. Pass `LOCALVERSION=` to every make, or it gains a `+`.
+The kernel release is `7.2.15-s10e-2`. Pass `LOCALVERSION=` to every make, or it gains a `+`.
 
 Changes for the Galaxy S10e
 ===========================
