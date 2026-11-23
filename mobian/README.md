@@ -31,9 +31,12 @@ initramfs (`initramfs/init`)
 ============================
 
 Brings up the USB gadget (NCM + RNDIS, fixed MACs), finds the root by `s10e.root=PARTLABEL=linux`, grows
-its file system to the partition, and switches to it. A failed boot leaves `/var/lib/s10e/boot-attempt`
-behind (`s10e-boot-ok.service` clears it on success), and the next boot stops in the rescue shell. Only the
-rescue shell (U-Boot menu, or after a failed boot) starts telnet and ssh on 172.16.42.1, over USB only; a
+its file system to the partition, and switches to it. Nothing stops that boot but U-Boot's rescue entry
+(`s10e.stay`) or a root that cannot be started at all: no partition named linux, a file system that mounts
+neither after `e2fsck -fy` nor read-only, no systemd on it. A boot that died before multi-user (a flat
+battery) leaves `/var/lib/s10e/boot-attempt` behind (`s10e-boot-ok.service` clears it on success); the next
+boot only logs it. A root that does not mount gets `e2fsck -fy`, then a read-only mount. Only the rescue
+shell (U-Boot menu, or a root that cannot be started) starts telnet and ssh on 172.16.42.1, over USB only; a
 normal boot opens nothing. `uboot/build.sh` packs it with busybox and dropbear (`RAW=initramfs.cpio.gz`);
 an ssh key for the rescue shell can be added with `$AUTHORIZED_KEYS`, the release has none. The script was written for one build machine and its
 paths are absolute: adjust them before using it elsewhere.
@@ -56,7 +59,8 @@ Services and configuration
 | `s10e-bt-addr(.service)` | Sets the Bluetooth address from the `efs` partition's `bt_addr`. |
 | `s10e-usb-net.service`, `s10e-usb-watch(.service)`, `s10e-usb-reconnect` | usb0 networking (172.16.42.1), and the gadget rebound after the port was in host mode. |
 | `s10e-cpuinfo(.service)` | **Disabled, do not enable.** Bind-mounted a `/proc/cpuinfo` with a `model name` for GNOME Settings, but any mount over a `/proc` file stops bubblewrap sandboxes (WebKitGTK, glycin, Flatpak) from mounting `/proc`. |
-| `s10e-boot-ok.service` | Clears the boot-attempt marker the initramfs sets. |
+| `*.service.d/boot-not-held.conf` | Start timeouts (5, 2 and 1 min) for `s10e-firstboot`, `s10e-gpu-load` and `s10e-touch-bind`: oneshots ordered before the display manager wait for ever by default, so a hang in one kept the GUI from starting. |
+| `s10e-boot-ok.service` | Clears the boot-attempt marker the initramfs sets; one left behind is only logged by the next boot. |
 | `s10e-tone` | The codec's tone generator on the 3.5 mm jack, for testing. |
 | `61-s10e-sensors.rules` | Mount matrix for the hub's accelerometer (it reports X and Y in Android's sign) and the proximity near level. |
 | `ucm2/conf.d/S10e` | ALSA UCM for the speaker and microphone. |
