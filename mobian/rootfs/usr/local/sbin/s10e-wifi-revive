@@ -1,0 +1,87 @@
+#!/bin/sh
+# s10e-wifi-revive: Wi-Fi back after its chip dropped off PCIe (a brown-out, the chip resetting itself). brcmfmac
+# then reports "the device is gone" and leaves the chip alone; when no interrupt comes from the dead chip, brcmfmac
+# reads nothing from it and only its control commands time out (3 "Timeout on response for query command" in 30 s:
+# NetworkManager asks every ~6 s; none in a day of normal use). Either one: this reloads the PCIe RC and brcmfmac exactly as
+# s10e-minimal does at every screen-off and screen-on (rmmod brcmfmac_wcc brcmfmac, rmmod pcie_exynos9820, modprobe
+# pcie_exynos9820: the chip is powered off and on and found again, brcmfmac loads with it). Under s10e-minimal's
+# lock, never during a call, not while s10e-minimal has Wi-Fi off for the screen-off; at most 3 reloads in 10 min,
+# then nothing more this boot (rm /run/s10e-wifi-revive.times arms it again).
+LOCK=/run/s10e-minimal.lock
+STATE=/run/s10e-minimal
+MAX=3
+WINDOW=600
+TIMES_F=/run/s10e-wifi-revive.times	# uptimes of this boot's reloads: kept over a restart of the service
+log() { echo "s10e-wifi-revive: $*"; }
+in_call() { mmcli -m any --voice-list-calls 2>/dev/null | grep -q -E "\((active|ringing-in|ringing-out|dialing|held|waiting)\)"; }
+uptime_s() { cut -d. -f1 /proc/uptime; }
+
+# 0: reloaded; 1: a call came in under the lock (try again); 2: s10e-minimal has Wi-Fi off, nothing to do
+reload_once() {
+	(
+		flock 9
+		grep -qx wifi $STATE 2>/dev/null && exit 2
+		in_call && exit 1
+		rmmod brcmfmac_wcc brcmfmac 2>/dev/null
+		rmmod pcie_exynos9820 || log "rmmod pcie_exynos9820 failed"
+		modprobe pcie_exynos9820 || log "modprobe pcie_exynos9820 failed"
+		exit 0
+	) 9>> $LOCK
+}
+
+revive() {
+	now=$(uptime_s) kept=
+	TIMES=$(cat $TIMES_F 2>/dev/null)
+	for t in $TIMES; do [ $((now - t)) -lt $WINDOW ] && kept="$kept $t"; done
+	TIMES=$kept
+	if [ $(echo $TIMES | wc -w) -ge $MAX ]; then
+		log "$MAX reloads in $((WINDOW / 60)) min and the chip is gone again: Wi-Fi stays off until the next boot"
+		echo stop >> $TIMES_F
+		return
+	fi
+	while :; do
+		if in_call; then
+			log "a call is live: the reload waits for its end"
+			while in_call; do sleep 10; done
+		fi
+		reload_once
+		case $? in
+		0) break ;;
+		2) log "s10e-minimal has Wi-Fi off (screen off): its screen-on brings the chip back"; return ;;
+		*) sleep 10 ;;
+		esac
+	done
+	TIMES="$TIMES $now"
+	echo $TIMES > $TIMES_F
+	log "reloaded the PCIe RC and brcmfmac ($(echo $TIMES | wc -w) in $((WINDOW / 60)) min)"
+	i=0
+	while [ $i -lt 30 ] && [ ! -e /sys/class/net/wlp1s0 ]; do sleep 1; i=$((i + 1)); done
+	if [ -e /sys/class/net/wlp1s0 ]; then log "wlp1s0 back after $i s"; else log "no wlp1s0 30 s after the reload"; fi
+}
+
+log "watching the kernel log for brcmfmac's \"the device is gone\" and its control command timeouts"
+# after a reload, everything the kernel logged up to this mark (the unload of the dead chip times out too) is old
+MARK="s10e-wifi-revive mark, kernel log read up to here"	# no "word:" first: journald would take it for an identifier and strip it
+act() { grep -qw stop $TIMES_F 2>/dev/null || revive; echo "$MARK" > /dev/kmsg; SKIP=1 TO=; }
+TO= SKIP=
+journalctl -k -f -n 0 -o cat | while read -r line; do
+	if [ -n "$SKIP" ]; then
+		case $line in *"$MARK"*) SKIP= ;; esac
+		continue
+	fi
+	case $line in
+	*brcmfmac*"the device is gone"*)
+		log "kernel: $line"
+		act
+		;;
+	*"brcmf_msgbuf_query_dcmd: Timeout on response for query command"*)
+		now=$(uptime_s) kept=
+		for t in $TO; do [ $((now - t)) -lt 30 ] && kept="$kept $t"; done
+		TO="$kept $now"
+		if [ $(echo $TO | wc -w) -ge 3 ]; then
+			log "3 control commands timed out in 30 s: the chip does not answer"
+			act
+		fi
+		;;
+	esac
+done

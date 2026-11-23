@@ -1,0 +1,11 @@
+[Unit]
+Description=S10e: Wi-Fi reloaded when its chip drops off PCIe
+After=systemd-journald.service ModemManager.service
+
+[Service]
+ExecStart=/usr/local/sbin/s10e-wifi-revive
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -76,6 +76,7 @@ Services and configuration
 | `brcmfmac-hostwake.conf` | `host_wake=gpa0:7`: the Wi-Fi dongle's out-of-band wake line, so Wi-Fi stays associated through a sleep and a unicast frame wakes the phone. |
 | `90-s10e-watchdog.conf`, `90-s10e-watchdog.rules` | systemd feeds the SoC watchdog (`/dev/watchdog-s10e`: softdog races it for `watchdog0`) with a 60 s timeout; a stalled SoC resets by itself. |
 | `s10e-arm-reset(.service)` | Points S-Boot at the recovery partition (U-Boot) for a reset the kernel does not announce (watchdog, panic): without it such a reset boots LineageOS. |
+| `s10e-wifi-revive(.service)` | Wi-Fi back when its chip drops off PCIe (a brown-out at low battery): on brcmfmac's "the device is gone", or 3 control command timeouts within 30 s (a dead chip that sends no interrupt), it reloads the PCIe controller and brcmfmac the way the screen-off sleep does (`s10e-minimal`), under the same lock, never during a call, at most 3 times in 10 min. |
 | `60-hang-panic.conf`, `61-s10e-hang.conf`, `s10e-persistent.conf` | A hung task, soft or hard lockup panics and reboots after 10 s, with the trace in pstore (systemd-pstore keeps it in `/var/lib/systemd/pstore`); a persistent journal. |
 | `62-s10e-wake-gesture.rules`, `63-s10e-panel-aod.rules` | Give the user's session the touchscreen's `wake_gesture` (double tap to wake) and the panel's `lpm` and `self_clock` (the AOD on the panel's own clock). |
 | `s10e-input` | Synthetic taps and swipes on the touchscreen, for testing. |
