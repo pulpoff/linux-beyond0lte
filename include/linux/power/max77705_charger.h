@@ -134,6 +134,13 @@
 #define MAX77705_WCIN_MAX_MA		820
 #define MAX77705_WCIN_STEP_MA		100
 #define MAX77705_WCIN_STEP_MS		500
+/* stock's wireless thermal policy, on the battery thermistor's zone */
+#define MAX77705_WCIN_ZONE		"battery-thermal"
+#define MAX77705_WCIN_HOT_MC		41000
+#define MAX77705_WCIN_COOL_MC		38000
+#define MAX77705_WCIN_HOT_MA		600
+#define MAX77705_WCIN_HOT_LCD_MA	450
+#define MAX77705_WCIN_POLL_MS		10000
 #define MAX77705_AUTO_SKIP		0
 
 #define AICL_WORK_DELAY_MS		100
@@ -204,6 +211,7 @@ struct max77705_charger_data {
 	struct delayed_work	wcin_work;
 	int			wcin_ma;	/* WCIN limit the ramp is at */
 	int			wcin_max_ma;	/* and where it stops */
+	bool			wcin_hot;	/* held down for the battery's heat */
 	struct power_supply	*psy_chg;
 };
 

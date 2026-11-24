@@ -7,6 +7,7 @@
  * Battery charger driver for MAXIM 77705 charger/power-supply.
  */
 
+#include <linux/backlight.h>
 #include <linux/devm-helpers.h>
 #include <linux/i2c.h>
 #include <linux/interrupt.h>
@@ -18,6 +19,7 @@
 #include <linux/power_supply.h>
 #include <linux/regmap.h>
 #include <linux/regulator/driver.h>
+#include <linux/thermal.h>
 
 static const char *max77705_charger_model		= "max77705";
 static const char *max77705_charger_manufacturer	= "Maxim Integrated";
@@ -612,29 +614,74 @@ static void max77705_chgin_isr_work(struct work_struct *work)
 }
 
 /*
+ * Stock's wireless thermal policy (battery,wpc_high_temp and the rest): from
+ * 41.0 C on the battery thermistor the input is held at 600 mA, 450 mA with
+ * the screen on, until the battery is back at 38.0 C. A board without the
+ * battery thermistor's zone gets no derating.
+ */
+static int max77705_wcin_ceiling(struct max77705_charger_data *chg)
+{
+	struct backlight_device *bd = NULL;
+	struct thermal_zone_device *tz;
+	int mc, ma;
+
+	tz = thermal_zone_get_zone_by_name(MAX77705_WCIN_ZONE);
+	if (IS_ERR(tz) || thermal_zone_get_temp(tz, &mc))
+		return chg->wcin_max_ma;
+
+	if (!chg->wcin_hot && mc >= MAX77705_WCIN_HOT_MC) {
+		chg->wcin_hot = true;
+		dev_info(chg->dev, "battery at %d.%d degC: wireless input held down\n",
+			 mc / 1000, mc % 1000 / 100);
+	} else if (chg->wcin_hot && mc <= MAX77705_WCIN_COOL_MC) {
+		chg->wcin_hot = false;
+		dev_info(chg->dev, "battery back at %d.%d degC: wireless input released\n",
+			 mc / 1000, mc % 1000 / 100);
+	}
+	if (!chg->wcin_hot)
+		return chg->wcin_max_ma;
+
+#if IS_REACHABLE(CONFIG_BACKLIGHT_CLASS_DEVICE)
+	bd = backlight_device_get_by_type(BACKLIGHT_RAW);
+#endif
+	ma = bd && !backlight_is_blank(bd) ? MAX77705_WCIN_HOT_LCD_MA : MAX77705_WCIN_HOT_MA;
+
+	return min(ma, chg->wcin_max_ma);
+}
+
+/*
  * Wireless (WCIN, fed by the IDT receiver): the receiver's own firmware runs
  * the Qi link at 5 V, the charger only limits what it takes. Stock starts at
  * 480 mA and steps up, so a weak pad is not overloaded the moment it starts;
- * the ceiling is the board's (maxim,wcin-current-limit-microamp), else 820 mA.
+ * the ceiling is the board's (maxim,wcin-current-limit-microamp), else 820 mA,
+ * and lower on a hot battery. On a pad the battery is looked at every 10 s.
  */
 static void max77705_wcin_work(struct work_struct *work)
 {
 	struct max77705_charger_data *chg =
 		container_of(to_delayed_work(work), struct max77705_charger_data, wcin_work);
 	unsigned int ok;
-	int ma;
+	int ma, ceiling = 0;
+	bool changed;
 
 	if (regmap_read(chg->regmap, MAX77705_CHG_REG_INT_OK, &ok))
 		return;
 
+	if (ok & MAX77705_WCIN_OK)
+		ceiling = max77705_wcin_ceiling(chg);
+
 	if (!(ok & MAX77705_WCIN_OK))
 		ma = MAX77705_WCIN_START_MA;
 	else if (!chg->wcin_ma)
-		ma = MAX77705_WCIN_START_MA;
+		ma = min(MAX77705_WCIN_START_MA, ceiling);
+	else if (chg->wcin_ma > ceiling)
+		ma = ceiling;
 	else
-		ma = min(chg->wcin_ma + MAX77705_WCIN_STEP_MA, chg->wcin_max_ma);
+		ma = min(chg->wcin_ma + MAX77705_WCIN_STEP_MA, ceiling);
 
-	if (ma != chg->wcin_ma || !(ok & MAX77705_WCIN_OK))
+	/* without a pad this runs from the interrupt only */
+	changed = ma != chg->wcin_ma || !(ok & MAX77705_WCIN_OK);
+	if (changed)
 		regmap_update_bits(chg->regmap, MAX77705_CHG_REG_CNFG_10,
 				   MAX77705_WCIN_LIM_MASK, MAX77705_WCIN_LIM(ma));
 
@@ -646,13 +693,15 @@ static void max77705_wcin_work(struct work_struct *work)
 		if (!chg->wcin_ma)
 			dev_info(chg->dev, "wireless input present\n");
 		chg->wcin_ma = ma;
-		if (ma < chg->wcin_max_ma)
-			queue_delayed_work(chg->wqueue, &chg->wcin_work,
-					   msecs_to_jiffies(MAX77705_WCIN_STEP_MS));
+		queue_delayed_work(chg->wqueue, &chg->wcin_work,
+				   msecs_to_jiffies(ma < ceiling ? MAX77705_WCIN_STEP_MS :
+						    MAX77705_WCIN_POLL_MS));
 	}
 
-	power_supply_changed(chg->psy_chg);
-	power_supply_changed(chg->psy_wcin);
+	if (changed) {
+		power_supply_changed(chg->psy_chg);
+		power_supply_changed(chg->psy_wcin);
+	}
 }
 
 static int max77705_charger_initialize(struct max77705_charger_data *chg)
