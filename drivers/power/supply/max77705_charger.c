@@ -189,7 +189,7 @@ static int max77705_get_online(struct regmap *regmap, int *val)
 	if (ret < 0)
 		return ret;
 
-	*val = !!(data & (MAX77705_CHGIN_OK | MAX77705_WCIN_OK));
+	*val = !!(data & MAX77705_CHGIN_OK);
 
 	return 0;
 }
@@ -569,7 +569,8 @@ static void max77705_chgin_isr_work(struct work_struct *work)
 /*
  * Wireless (WCIN, fed by the IDT receiver): the receiver's own firmware runs
  * the Qi link at 5 V, the charger only limits what it takes. Stock starts at
- * 480 mA and steps up, so a weak pad is not overloaded the moment it starts.
+ * 480 mA and steps up, so a weak pad is not overloaded the moment it starts;
+ * the ceiling is the board's (maxim,wcin-current-limit-microamp), else 820 mA.
  */
 static void max77705_wcin_work(struct work_struct *work)
 {
@@ -586,7 +587,7 @@ static void max77705_wcin_work(struct work_struct *work)
 	else if (!chg->wcin_ma)
 		ma = MAX77705_WCIN_START_MA;
 	else
-		ma = min(chg->wcin_ma + MAX77705_WCIN_STEP_MA, MAX77705_WCIN_MAX_MA);
+		ma = min(chg->wcin_ma + MAX77705_WCIN_STEP_MA, chg->wcin_max_ma);
 
 	if (ma != chg->wcin_ma || !(ok & MAX77705_WCIN_OK))
 		regmap_update_bits(chg->regmap, MAX77705_CHG_REG_CNFG_10,
@@ -600,7 +601,7 @@ static void max77705_wcin_work(struct work_struct *work)
 		if (!chg->wcin_ma)
 			dev_info(chg->dev, "wireless input present\n");
 		chg->wcin_ma = ma;
-		if (ma < MAX77705_WCIN_MAX_MA)
+		if (ma < chg->wcin_max_ma)
 			queue_delayed_work(chg->wqueue, &chg->wcin_work,
 					   msecs_to_jiffies(MAX77705_WCIN_STEP_MS));
 	}
@@ -768,6 +769,7 @@ static int max77705_charger_probe(struct i2c_client *i2c)
 	struct regmap_irq_chip *chip_desc;
 	struct device *dev;
 	struct regmap_irq_chip_data *irq_data;
+	u32 wcin_ua;
 	int ret;
 
 	dev = &i2c->dev;
@@ -829,6 +831,11 @@ static int max77705_charger_probe(struct i2c_client *i2c)
 					"chgin-irq", chg);
 	if (ret)
 		return ret;
+
+	chg->wcin_max_ma = MAX77705_WCIN_MAX_MA;
+	if (!device_property_read_u32(dev, "maxim,wcin-current-limit-microamp", &wcin_ua))
+		chg->wcin_max_ma = clamp_val(wcin_ua / 1000, MAX77705_WCIN_START_MA,
+					     MAX77705_WCIN_LIM_MAX_MA);
 
 	ret = devm_delayed_work_autocancel(dev, &chg->wcin_work, max77705_wcin_work);
 	if (ret)
