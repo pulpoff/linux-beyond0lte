@@ -709,24 +709,46 @@ static void max77705_temp_work(struct work_struct *work)
 }
 
 /*
+ * Where the wireless input is held down and let go, on the battery: the
+ * board's maxim,wcin-derate-millicelsius = <hot cool>, else the S20 FE's
+ * stock 41.0 / 38.0 C. Read each time, so that a DT overlay applied after
+ * probe counts too.
+ */
+static void max77705_wcin_derate_temps(struct max77705_charger_data *chg,
+				       int *hot_mc, int *cool_mc)
+{
+	u32 t[2];
+
+	*hot_mc = MAX77705_WCIN_HOT_MC;
+	*cool_mc = MAX77705_WCIN_COOL_MC;
+	if (!device_property_read_u32_array(chg->dev, "maxim,wcin-derate-millicelsius", t, 2) &&
+	    t[1] < t[0] && t[0] <= MAX77705_BAT_STOP_MC) {
+		*hot_mc = t[0];
+		*cool_mc = t[1];
+	}
+}
+
+/*
  * Stock's wireless thermal policy (battery,wpc_high_temp and the rest): from
- * 41.0 C on the battery thermistor the input is held at 600 mA, 450 mA with
- * the screen on, until the battery is back at 38.0 C. A board without the
- * battery thermistor's zone gets no derating.
+ * 41.0 C on the battery thermistor (the S20 FE; 38.0 C on the S10e) the input
+ * is held at 600 mA, 450 mA with the screen on, until the battery is back at
+ * 38.0 C (36.0 C). A board without the battery thermistor's zone gets no
+ * derating.
  */
 static int max77705_wcin_ceiling(struct max77705_charger_data *chg)
 {
 	struct backlight_device *bd = NULL;
-	int mc, ma;
+	int mc, ma, hot_mc, cool_mc;
 
 	if (max77705_battery_mc(&mc))
 		return chg->wcin_max_ma;
 
-	if (!chg->wcin_hot && mc >= MAX77705_WCIN_HOT_MC) {
+	max77705_wcin_derate_temps(chg, &hot_mc, &cool_mc);
+	if (!chg->wcin_hot && mc >= hot_mc) {
 		chg->wcin_hot = true;
 		dev_info(chg->dev, "battery at %d.%d degC: wireless input held down\n",
 			 mc / 1000, mc % 1000 / 100);
-	} else if (chg->wcin_hot && mc <= MAX77705_WCIN_COOL_MC) {
+	} else if (chg->wcin_hot && mc <= cool_mc) {
 		chg->wcin_hot = false;
 		dev_info(chg->dev, "battery back at %d.%d degC: wireless input released\n",
 			 mc / 1000, mc % 1000 / 100);
