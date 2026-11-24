@@ -448,6 +448,10 @@ static const struct of_device_id exynos_adc_match[] = {
 	}, {
 		.compatible = "samsung,exynos990-adc",
 		.data = &exynos990_adc_data,
+	}, {
+		/* the same block, at the same address in CMGP */
+		.compatible = "samsung,exynos9820-adc",
+		.data = &exynos990_adc_data,
 	},
 	{ }
 };
