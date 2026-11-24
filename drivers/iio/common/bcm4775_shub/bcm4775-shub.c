@@ -12,6 +12,9 @@
  * compass device turns the hub's calibrated magnetometer and the accelerometer
  * into a tilt-compensated heading, buffered, for iio-sensor-proxy.
  *
+ * The chip's GNSS engine is reached through /dev/bcm4775-gnss, for a GNSS host
+ * engine in userspace (see the GNSS section).
+ *
  * The patch is loaded with request_firmware() in the text format lhd reads
  * (<AsicVersion=..>, <PatchAddress=..>, <Blob=hex>).
  */
@@ -29,17 +32,22 @@
 #include <linux/iio/trigger_consumer.h>
 #include <linux/iio/triggered_buffer.h>
 #include <linux/interrupt.h>
+#include <linux/kfifo.h>
+#include <linux/kref.h>
 #include <linux/kthread.h>
 #include <linux/math64.h>
 #include <linux/module.h>
+#include <linux/miscdevice.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
+#include <linux/poll.h>
 #include <linux/pm_runtime.h>
 #include <linux/pm_wakeup.h>
 #include <linux/regulator/consumer.h>
 #include <linux/slab.h>
 #include <linux/spi/spi.h>
 #include <linux/timekeeping.h>
+#include <linux/uaccess.h>
 #include <linux/unaligned.h>
 #include <linux/vmalloc.h>
 
@@ -68,6 +76,9 @@
 #define RPC_VERSION_REQ		0
 #define RPC_VERSION		3
 #define RPC_MEM_WRITE		5
+#define RPC_GNSS_POWER		28
+#define RPC_GNSS_TX		30
+#define RPC_GNSS_RX		31
 #define RPC_SSP_TX		32
 #define RPC_SSP_RX		33
 #define RPC_DEBUG		43
@@ -215,6 +226,7 @@ struct shub {
 
 	/* TL transmit */
 	u8 seq, rseq, rseq0;
+	unsigned int rsent;	/* reliable packets since the last sync */
 	u8 chip_seq;
 	bool need_ack;
 	bool rack_valid;
@@ -279,6 +291,9 @@ struct shub {
 	bool dying;
 	struct work_struct init_work;
 	struct completion booted;
+
+	struct shub_gnss *gnss;	/* under io_lock */
+	bool gnss_on;		/* GNSS switched on (RPC 28 [01]); under io_lock */
 };
 
 enum { SSP_HDR, SSP_READ, SSP_FRAME };
@@ -440,6 +455,7 @@ static int tl_send(struct shub *h, const u8 *payload, unsigned int n,
 	if (reliable) {
 		flags |= TL_RELIABLE;
 		hdr[hl++] = h->rseq++;
+		h->rsent++;
 	}
 	if (h->garbage && !ext) {
 		/* how much noise preceded the chip's last reply, as lhd reports */
@@ -504,6 +520,7 @@ static int tl_send_rpc(struct shub *h, u8 id, const u8 *data, unsigned int n,
 }
 
 static void ssp_feed(struct shub *h, const u8 *p, unsigned int n);
+static void shub_gnss_rx(struct shub *h, const u8 *d, unsigned int n);
 
 static void tl_rpc(struct shub *h, u8 id, const u8 *d, unsigned int n)
 {
@@ -519,6 +536,9 @@ static void tl_rpc(struct shub *h, u8 id, const u8 *d, unsigned int n)
 		if (n >= 2)
 			ssp_feed(h, d + 2, min_t(unsigned int, n - 2,
 						 get_unaligned_le16(d)));
+		break;
+	case RPC_GNSS_RX:
+		shub_gnss_rx(h, d, n);
 		break;
 	default:
 		dev_dbg(&h->spi->dev, "rpc %u (%u bytes)\n", id, n);
@@ -1008,6 +1028,7 @@ static bool shub_hello(struct shub *h)
 static void tl_reset(struct shub *h)
 {
 	h->rseq = h->rseq0 = 0;
+	h->rsent = 0;
 	h->rack_valid = false;
 	h->racked = 0;
 	h->need_ack = false;
@@ -1279,6 +1300,8 @@ static void shub_ctl_watch(struct shub *h, int ret)
 	}
 }
 
+static void shub_gnss_restore(struct shub *h);
+
 /* ---------------------------------------------------------------- thread */
 
 static int shub_thread(void *arg)
@@ -1353,9 +1376,10 @@ reboot:
 			shub_queue_idle(h);
 	}
 	mutex_unlock(&h->sens_lock);
+	shub_gnss_restore(h);
 
 	while (!kthread_should_stop()) {
-		bool active = false;
+		bool active = READ_ONCE(h->gnss_on);
 		long to;
 
 		for (i = 0; i < SHUB_NSENS; i++)
@@ -1792,6 +1816,309 @@ static void shub_compass_work(struct work_struct *w)
 		dev_warn(&h->spi->dev, "no compass: %d\n", ret);
 }
 
+/* ---------------------------------------------------------------- GNSS */
+
+/*
+ * The chip's GNSS engine is driven by a position engine on the host, which
+ * reaches it through three RPCs over this TL:
+ * RPC 28 switches GNSS on ([01]) and off ([00]), RPC 30 takes the host's frames
+ * to the chip and RPC 31 brings the chip's back, both as [le16 length][bytes].
+ * /dev/bcm4775-gnss passes them through for that host engine, one
+ * record per read() or write(): [u8 RPC id][payload]. Writes take RPC 28 and
+ * RPC 30 only and go out reliable; reads return RPC 31.
+ * One opener at a time. Closing it with GNSS on switches GNSS off, and a hub
+ * reboot (which power-cycles the chip) switches it back on if it was on.
+ */
+#define GNSS_FIFO_SIZE		65536
+/* an RPC payload whose escaped TL frame still fits txframe and the SSI buffer */
+#define GNSS_MAX_PAYLOAD	2000
+
+struct shub_gnss {
+	struct kref ref;
+	struct miscdevice misc;
+	struct mutex lock;		/* h and open; held around writes */
+	struct shub *h;			/* NULL once the hub is removed */
+	bool gone;
+	bool open;
+	struct mutex rlock;		/* one reader at a time */
+	spinlock_t rx_lock;		/* the fifo's writer side and resets */
+	struct kfifo_rec_ptr_2 rx;	/* RPC 31 payloads */
+	wait_queue_head_t wait;
+	unsigned int dropped;
+	u8 *wbuf, *rbuf;
+};
+
+/* tl_rpc(), with io_lock held */
+static void shub_gnss_rx(struct shub *h, const u8 *d, unsigned int n)
+{
+	struct shub_gnss *g = h->gnss;
+
+	if (!g || !n || !READ_ONCE(g->open))
+		return;
+	if (!kfifo_in_spinlocked(&g->rx, d, n, &g->rx_lock)) {
+		g->dropped++;
+		dev_warn_ratelimited(&h->spi->dev, "GNSS: reader too slow, %u records dropped\n",
+				     g->dropped);
+		return;
+	}
+	wake_up_interruptible(&g->wait);
+}
+
+static int shub_gnss_send(struct shub *h, u8 id, const u8 *p, unsigned int n)
+{
+	int ret = 0;
+
+	mutex_lock(&h->io_lock);
+	if (!h->ready) {
+		/* rebooting, which leaves GNSS off: an "off" is done already */
+		if (id == RPC_GNSS_POWER && !p[0])
+			h->gnss_on = false;
+		else
+			ret = -EAGAIN;
+		goto out;
+	}
+	/*
+	 * Keep at most a window of reliable packets unacknowledged, like the
+	 * patch download. A lost ack must not stop GNSS for good: after a
+	 * second without one, stop counting the missing ones and send on.
+	 */
+	if (h->rsent - h->racked >= TL_WINDOW &&
+	    !shub_wait_locked(h, h->rsent - h->racked < TL_WINDOW, 1000)) {
+		dev_warn_ratelimited(&h->spi->dev, "GNSS: %u reliable packets not acknowledged\n",
+				     h->rsent - h->racked);
+		h->racked = h->rsent;
+	}
+	ret = tl_send_rpc(h, id, p, n, true);
+	if (!ret && id == RPC_GNSS_POWER)
+		h->gnss_on = p[0];
+out:
+	mutex_unlock(&h->io_lock);
+	return ret;
+}
+
+/* the thread, after a boot: a reboot power-cycled the chip */
+static void shub_gnss_restore(struct shub *h)
+{
+	static const u8 on = 1;
+
+	mutex_lock(&h->io_lock);
+	if (h->gnss_on && h->ready) {
+		if (tl_send_rpc(h, RPC_GNSS_POWER, &on, 1, true))
+			h->gnss_on = false;
+		dev_info(&h->spi->dev, "GNSS %s after the hub reboot\n",
+			 h->gnss_on ? "back on" : "could not be switched back on");
+	}
+	mutex_unlock(&h->io_lock);
+}
+
+static struct shub_gnss *shub_gnss_of(struct file *f)
+{
+	return container_of(f->private_data, struct shub_gnss, misc);
+}
+
+static void shub_gnss_free(struct kref *ref)
+{
+	struct shub_gnss *g = container_of(ref, struct shub_gnss, ref);
+
+	kfifo_free(&g->rx);
+	kfree(g->wbuf);
+	kfree(g->rbuf);
+	kfree(g);
+}
+
+static int shub_gnss_open(struct inode *inode, struct file *f)
+{
+	struct shub_gnss *g = shub_gnss_of(f);
+	int ret = 0;
+
+	mutex_lock(&g->lock);
+	if (g->gone) {
+		ret = -ENODEV;
+	} else if (g->open) {
+		ret = -EBUSY;
+	} else {
+		spin_lock_irq(&g->rx_lock);
+		kfifo_reset(&g->rx);
+		spin_unlock_irq(&g->rx_lock);
+		g->dropped = 0;
+		kref_get(&g->ref);
+		WRITE_ONCE(g->open, true);
+	}
+	mutex_unlock(&g->lock);
+	return ret ?: stream_open(inode, f);
+}
+
+static int shub_gnss_release(struct inode *inode, struct file *f)
+{
+	struct shub_gnss *g = shub_gnss_of(f);
+	static const u8 off;
+
+	mutex_lock(&g->lock);
+	if (g->h && READ_ONCE(g->h->gnss_on) &&
+	    shub_gnss_send(g->h, RPC_GNSS_POWER, &off, 1))
+		dev_warn(&g->h->spi->dev, "GNSS: could not switch it off\n");
+	WRITE_ONCE(g->open, false);
+	mutex_unlock(&g->lock);
+	kref_put(&g->ref, shub_gnss_free);
+	return 0;
+}
+
+static ssize_t shub_gnss_read(struct file *f, char __user *buf, size_t count,
+			      loff_t *pos)
+{
+	struct shub_gnss *g = shub_gnss_of(f);
+	unsigned int len;
+	ssize_t ret;
+
+	if (mutex_lock_interruptible(&g->rlock))
+		return -ERESTARTSYS;
+	while (kfifo_is_empty(&g->rx)) {
+		if (READ_ONCE(g->gone)) {
+			ret = -ENODEV;
+			goto out;
+		}
+		if (f->f_flags & O_NONBLOCK) {
+			ret = -EAGAIN;
+			goto out;
+		}
+		ret = wait_event_interruptible(g->wait, !kfifo_is_empty(&g->rx) ||
+					       READ_ONCE(g->gone));
+		if (ret)
+			goto out;
+	}
+	len = kfifo_peek_len(&g->rx);
+	if (count < len + 1) {
+		ret = -EINVAL;		/* the record stays for a bigger buffer */
+		goto out;
+	}
+	g->rbuf[0] = RPC_GNSS_RX;
+	len = kfifo_out(&g->rx, g->rbuf + 1, len);
+	ret = copy_to_user(buf, g->rbuf, len + 1) ? -EFAULT : len + 1;
+out:
+	mutex_unlock(&g->rlock);
+	return ret;
+}
+
+static ssize_t shub_gnss_write(struct file *f, const char __user *buf, size_t count,
+			       loff_t *pos)
+{
+	struct shub_gnss *g = shub_gnss_of(f);
+	u8 *w = g->wbuf;
+	struct shub *h;
+	ssize_t ret;
+
+	if (count < 2 || count > 1 + GNSS_MAX_PAYLOAD)
+		return -EINVAL;
+	if (mutex_lock_interruptible(&g->lock))
+		return -ERESTARTSYS;
+	h = g->h;
+	if (!h) {
+		ret = -ENODEV;
+		goto out;
+	}
+	if (copy_from_user(w, buf, count)) {
+		ret = -EFAULT;
+		goto out;
+	}
+	switch (w[0]) {
+	case RPC_GNSS_POWER:
+		ret = count == 2 && w[1] <= 1 ? 0 : -EINVAL;
+		break;
+	case RPC_GNSS_TX:
+		ret = count > 3 && get_unaligned_le16(w + 1) == count - 3 ? 0 : -EINVAL;
+		break;
+	default:
+		ret = -EPERM;		/* nothing else reaches the chip from here */
+	}
+	if (ret)
+		goto out;
+	/* the hub boots in the background; an opener can ask before it runs */
+	ret = wait_for_completion_interruptible_timeout(&h->booted, 10 * HZ);
+	if (ret < 0)
+		goto out;
+	ret = shub_gnss_send(h, w[0], w + 1, count - 1) ?: count;
+out:
+	mutex_unlock(&g->lock);
+	return ret;
+}
+
+static __poll_t shub_gnss_poll(struct file *f, poll_table *pt)
+{
+	struct shub_gnss *g = shub_gnss_of(f);
+	__poll_t mask = EPOLLOUT | EPOLLWRNORM;
+
+	poll_wait(f, &g->wait, pt);
+	if (!kfifo_is_empty(&g->rx))
+		mask |= EPOLLIN | EPOLLRDNORM;
+	if (READ_ONCE(g->gone))
+		mask |= EPOLLHUP | EPOLLERR;
+	return mask;
+}
+
+static const struct file_operations shub_gnss_fops = {
+	.owner = THIS_MODULE,
+	.open = shub_gnss_open,
+	.release = shub_gnss_release,
+	.read = shub_gnss_read,
+	.write = shub_gnss_write,
+	.poll = shub_gnss_poll,
+};
+
+static int shub_gnss_init(struct shub *h)
+{
+	struct shub_gnss *g;
+	int ret;
+
+	g = kzalloc(sizeof(*g), GFP_KERNEL);
+	if (!g)
+		return -ENOMEM;
+	kref_init(&g->ref);
+	mutex_init(&g->lock);
+	mutex_init(&g->rlock);
+	spin_lock_init(&g->rx_lock);
+	init_waitqueue_head(&g->wait);
+	g->h = h;
+	g->wbuf = kmalloc(1 + GNSS_MAX_PAYLOAD, GFP_KERNEL);
+	g->rbuf = kmalloc(1 + TL_MAX_PACKET, GFP_KERNEL);
+	ret = kfifo_alloc(&g->rx, GNSS_FIFO_SIZE, GFP_KERNEL);
+	if (ret || !g->wbuf || !g->rbuf) {
+		kref_put(&g->ref, shub_gnss_free);
+		return -ENOMEM;
+	}
+	g->misc.minor = MISC_DYNAMIC_MINOR;
+	g->misc.name = "bcm4775-gnss";
+	g->misc.fops = &shub_gnss_fops;
+	g->misc.parent = &h->spi->dev;
+	g->misc.mode = 0600;
+	ret = misc_register(&g->misc);
+	if (ret) {
+		kref_put(&g->ref, shub_gnss_free);
+		return ret;
+	}
+	mutex_lock(&h->io_lock);
+	h->gnss = g;
+	mutex_unlock(&h->io_lock);
+	return 0;
+}
+
+static void shub_gnss_exit(struct shub *h)
+{
+	struct shub_gnss *g = h->gnss;
+
+	if (!g)
+		return;
+	misc_deregister(&g->misc);
+	mutex_lock(&g->lock);
+	g->h = NULL;
+	WRITE_ONCE(g->gone, true);
+	mutex_unlock(&g->lock);
+	mutex_lock(&h->io_lock);
+	h->gnss = NULL;
+	mutex_unlock(&h->io_lock);
+	wake_up_interruptible(&g->wait);
+	kref_put(&g->ref, shub_gnss_free);
+}
+
 /* ---------------------------------------------------------------- probe */
 
 static int shub_probe(struct spi_device *spi)
@@ -1897,6 +2224,11 @@ static int shub_probe(struct spi_device *spi)
 		}
 	}
 
+	/* the sensors do without GNSS */
+	ret = shub_gnss_init(h);
+	if (ret)
+		dev_warn(dev, "no GNSS device: %d\n", ret);
+
 	h->thread = kthread_run(shub_thread, h, "bcm4775-shub");
 	if (IS_ERR(h->thread)) {
 		ret = PTR_ERR(h->thread);
@@ -1905,6 +2237,7 @@ static int shub_probe(struct spi_device *spi)
 	return 0;
 
 err_ws:
+	shub_gnss_exit(h);
 	wakeup_source_unregister(h->ws);
 err_reg:
 	regulator_disable(h->vdd);
@@ -1915,6 +2248,7 @@ static void shub_remove(struct spi_device *spi)
 {
 	struct shub *h = spi_get_drvdata(spi);
 
+	shub_gnss_exit(h);
 	spin_lock(&h->q_lock);
 	WRITE_ONCE(h->dying, true);
 	spin_unlock(&h->q_lock);

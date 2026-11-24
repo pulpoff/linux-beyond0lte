@@ -9,7 +9,8 @@ config IIO_BCM4775_SHUB
 	  The BCM4775 GNSS/sensor hub in Samsung Galaxy S10 phones. It needs
 	  a RAM patch (brcm/bcm4775-shub.patch) on every power-up. The
 	  accelerometer, light, proximity and compass it runs are exposed
-	  as IIO devices.
+	  as IIO devices, and its GNSS engine as /dev/bcm4775-gnss for a
+	  GNSS host engine in userspace.
 
 	  To compile this driver as a module, choose M here: the module
 	  will be called bcm4775-shub.
