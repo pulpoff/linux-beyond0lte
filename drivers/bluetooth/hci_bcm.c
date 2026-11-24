@@ -1554,6 +1554,16 @@ static int bcm_serdev_probe(struct serdev_device *serdev)
 			bcmdev->oper_speed = data->max_speed;
 	}
 
+	/* A phone's controller keeps its links while the phone sleeps, as on
+	 * Android: the car or the headphones stay connected, and the
+	 * controller wakes the host on its host-wake line when they send. The
+	 * core's suspend notifier would disconnect every device at each system
+	 * sleep instead (a laptop whose lid closes).
+	 */
+	if (bcmdev->irq > 0 &&
+	    of_device_is_compatible(serdev->dev.of_node, "brcm,bcm4375-bt"))
+		set_bit(HCI_UART_NO_SUSPEND_NOTIFIER, &bcmdev->serdev_hu.flags);
+
 	return hci_uart_register_device(&bcmdev->serdev_hu, &bcm_proto);
 }
 
