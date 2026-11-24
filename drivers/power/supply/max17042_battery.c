@@ -145,6 +145,20 @@ static int max17042_get_status(struct max17042_chip *chip, int *status)
 		return 0;
 	}
 	if (ret == 0) {
+		union power_supply_propval sup;
+
+		/*
+		 * A charger can charge from an input that is a supply of its
+		 * own, not of the battery: the MAX77705 from its wireless
+		 * input while its cable input is offline. Believe it then.
+		 */
+		if (!power_supply_get_property_from_supplier(chip->battery,
+							     POWER_SUPPLY_PROP_STATUS, &sup) &&
+		    (sup.intval == POWER_SUPPLY_STATUS_CHARGING ||
+		     sup.intval == POWER_SUPPLY_STATUS_FULL)) {
+			*status = sup.intval;
+			return 0;
+		}
 		*status = POWER_SUPPLY_STATUS_DISCHARGING;
 		return 0;
 	}

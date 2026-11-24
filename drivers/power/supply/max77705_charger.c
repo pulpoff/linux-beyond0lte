@@ -548,6 +548,51 @@ static int max77705_property_is_writeable(struct power_supply *psy,
 	}
 }
 
+/*
+ * The wireless input as a supply of its own, so that userspace can tell a
+ * pad from a cable: the charger's supply stays CHGIN's.
+ */
+static enum power_supply_property max77705_wcin_props[] = {
+	POWER_SUPPLY_PROP_ONLINE,
+	POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT,
+};
+
+static int max77705_wcin_get_property(struct power_supply *psy,
+				      enum power_supply_property psp,
+				      union power_supply_propval *val)
+{
+	struct max77705_charger_data *chg = power_supply_get_drvdata(psy);
+	unsigned int reg;
+	int ret;
+
+	switch (psp) {
+	case POWER_SUPPLY_PROP_ONLINE:
+		ret = regmap_read(chg->regmap, MAX77705_CHG_REG_INT_OK, &reg);
+		if (ret)
+			return ret;
+		val->intval = !!(reg & MAX77705_WCIN_OK);
+		return 0;
+	case POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT:
+		/* WCIN_LIM code n limits the input to (n + 1) x 25 mA, 100 mA at least */
+		ret = regmap_read(chg->regmap, MAX77705_CHG_REG_CNFG_10, &reg);
+		if (ret)
+			return ret;
+		reg &= MAX77705_WCIN_LIM_MASK;
+		val->intval = reg <= 3 ? 100000 : (reg + 1) * 25000;
+		return 0;
+	default:
+		return -EINVAL;
+	}
+}
+
+static const struct power_supply_desc max77705_wcin_psy_desc = {
+	.name = "max77705-wireless",
+	.type = POWER_SUPPLY_TYPE_WIRELESS,
+	.properties = max77705_wcin_props,
+	.num_properties = ARRAY_SIZE(max77705_wcin_props),
+	.get_property = max77705_wcin_get_property,
+};
+
 static const struct power_supply_desc max77705_charger_psy_desc = {
 	.name = "max77705-charger",
 	.type = POWER_SUPPLY_TYPE_USB,
@@ -607,6 +652,7 @@ static void max77705_wcin_work(struct work_struct *work)
 	}
 
 	power_supply_changed(chg->psy_chg);
+	power_supply_changed(chg->psy_wcin);
 }
 
 static int max77705_charger_initialize(struct max77705_charger_data *chg)
@@ -806,6 +852,12 @@ static int max77705_charger_probe(struct i2c_client *i2c)
 	chg->psy_chg = devm_power_supply_register(dev, &max77705_charger_psy_desc, &pscfg);
 	if (IS_ERR(chg->psy_chg))
 		return PTR_ERR(chg->psy_chg);
+
+	/* nothing in the DT names the wireless input: no node of its own */
+	pscfg.fwnode = NULL;
+	chg->psy_wcin = devm_power_supply_register(dev, &max77705_wcin_psy_desc, &pscfg);
+	if (IS_ERR(chg->psy_wcin))
+		return PTR_ERR(chg->psy_wcin);
 
 	ret = devm_regmap_add_irq_chip(chg->dev, chg->regmap, i2c->irq,
 					IRQF_ONESHOT, 0,

@@ -195,6 +195,7 @@ static const struct reg_field max77705_reg_field[MAX77705_N_REGMAP_FIELDS] = {
 
 struct max77705_charger_data {
 	struct device			*dev;
+	struct power_supply		*psy_wcin;	/* the wireless input */
 	struct regmap		*regmap;
 	struct regmap_field	*rfield[MAX77705_N_REGMAP_FIELDS];
 	struct power_supply_battery_info *bat_info;
