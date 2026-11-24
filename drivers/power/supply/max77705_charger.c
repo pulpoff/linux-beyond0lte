@@ -15,6 +15,7 @@
 #include <linux/mfd/max77705-private.h>
 #include <linux/power/max77705_charger.h>
 #include <linux/module.h>
+#include <linux/moduleparam.h>
 #include <linux/platform_device.h>
 #include <linux/power_supply.h>
 #include <linux/regmap.h>
@@ -23,6 +24,17 @@
 
 static const char *max77705_charger_model		= "max77705";
 static const char *max77705_charger_manufacturer	= "Maxim Integrated";
+
+/*
+ * For tests only: a lower charge-stop / resume temperature for this boot
+ * (milli-degC, 0 = stock's 50.0 / 48.0 C). Never above stock's.
+ */
+static int test_stop_mc;
+module_param(test_stop_mc, int, 0644);
+MODULE_PARM_DESC(test_stop_mc, "test only: stop charging from this battery temperature (mC)");
+static int test_resume_mc;
+module_param(test_resume_mc, int, 0644);
+MODULE_PARM_DESC(test_resume_mc, "test only: charge again from this battery temperature (mC)");
 
 static const struct regmap_config max77705_chg_regmap_config = {
 	.reg_base = MAX77705_CHG_REG_BASE,
@@ -74,6 +86,7 @@ static irqreturn_t max77705_wcin_irq(int irq, void *irq_drv_data)
 	struct max77705_charger_data *chg = irq_drv_data;
 
 	mod_delayed_work(chg->wqueue, &chg->wcin_work, 0);
+	mod_delayed_work(chg->wqueue, &chg->temp_work, 0);
 
 	return IRQ_HANDLED;
 }
@@ -182,6 +195,16 @@ static void max77705_charger_disable(void *data)
 		dev_err(chg->dev, "unable to disable the charger: %d\n", rv);
 }
 
+/* unbind: no temperature check may enable the charger after this */
+static void max77705_charger_stop(void *data)
+{
+	struct max77705_charger_data *chg = data;
+
+	WRITE_ONCE(chg->unbinding, true);
+	cancel_delayed_work_sync(&chg->temp_work);
+	max77705_charger_disable(chg);
+}
+
 static int max77705_get_online(struct regmap *regmap, int *val)
 {
 	unsigned int data;
@@ -264,7 +287,10 @@ static int max77705_get_status(struct max77705_charger_data *chg, int *val)
 
 	regmap_field_read(chg->rfield[MAX77705_CHG_EN], &chg_en);
 	if (!chg_en) {
-		*val = POWER_SUPPLY_CHARGE_TYPE_NONE;
+		/* stopped (a hot battery): "not charging" only with an input */
+		regmap_read(regmap, MAX77705_CHG_REG_INT_OK, &reg_data);
+		*val = reg_data & (MAX77705_CHGIN_OK | MAX77705_WCIN_OK) ?
+		       POWER_SUPPLY_STATUS_NOT_CHARGING : POWER_SUPPLY_STATUS_DISCHARGING;
 		return 0;
 	}
 
@@ -377,6 +403,11 @@ static int max77705_get_health(struct max77705_charger_data *chg, int *val)
 	struct regmap *regmap = chg->regmap;
 	unsigned int ok;
 	int ret;
+
+	if (chg->bat_hot) {
+		*val = POWER_SUPPLY_HEALTH_OVERHEAT;
+		return 0;
+	}
 
 	/* the DETAILS_00 input state is CHGIN's; a wireless input has none */
 	ret = regmap_read(regmap, MAX77705_CHG_REG_INT_OK, &ok);
@@ -610,7 +641,71 @@ static void max77705_chgin_isr_work(struct work_struct *work)
 	struct max77705_charger_data *chg =
 		container_of(work, struct max77705_charger_data, chgin_work);
 
+	mod_delayed_work(chg->wqueue, &chg->temp_work, 0);
 	power_supply_changed(chg->psy_chg);
+}
+
+/* the battery thermistor (the SoC ADC's NTC zone on these phones), in mC */
+static int max77705_battery_mc(int *mc)
+{
+	struct thermal_zone_device *tz;
+
+	tz = thermal_zone_get_zone_by_name(MAX77705_BAT_ZONE);
+	if (IS_ERR(tz))
+		return PTR_ERR(tz);
+
+	return thermal_zone_get_temp(tz, mc);
+}
+
+/*
+ * Stock stops charging from every input once the battery thermistor reads
+ * 50.0 C and starts again at 48.0 C (battery,temp_high_threshold_normal and
+ * battery,temp_high_recovery_normal). Charging stops through CHG_EN only:
+ * the input keeps running the phone. Looked at every 10 s while an input is
+ * online; the input interrupts start it again. A board without the zone
+ * gets no stop, and one warning.
+ */
+static void max77705_temp_work(struct work_struct *work)
+{
+	struct max77705_charger_data *chg =
+		container_of(to_delayed_work(work), struct max77705_charger_data, temp_work);
+	int stop_mc = MAX77705_BAT_STOP_MC, resume_mc = MAX77705_BAT_RESUME_MC;
+	unsigned int ok;
+	int mc;
+
+	if (READ_ONCE(chg->unbinding) ||
+	    regmap_read(chg->regmap, MAX77705_CHG_REG_INT_OK, &ok) ||
+	    !(ok & (MAX77705_CHGIN_OK | MAX77705_WCIN_OK)))
+		return;
+
+	if (test_stop_mc > 0)
+		stop_mc = min(test_stop_mc, MAX77705_BAT_STOP_MC);
+	resume_mc = min(test_resume_mc > 0 ? test_resume_mc : resume_mc,
+			stop_mc - MAX77705_BAT_MIN_HYST_MC);
+
+	if (max77705_battery_mc(&mc)) {
+		if (chg->zone_misses < MAX77705_BAT_ZONE_TRIES &&
+		    ++chg->zone_misses == MAX77705_BAT_ZONE_TRIES)
+			dev_warn(chg->dev, "no %s thermal zone: charging does not stop on a hot battery\n",
+				 MAX77705_BAT_ZONE);
+	} else if (!chg->bat_hot && mc >= stop_mc) {
+		chg->bat_hot = true;
+		/* CHG_EN alone: the OTG bits max77705_charger_disable() clears stay */
+		if (regmap_field_write(chg->rfield[MAX77705_CHG_EN], MAX77705_CHG_DISABLE))
+			dev_err(chg->dev, "unable to stop charging\n");
+		dev_warn(chg->dev, "battery at %d.%d degC: charging stopped until %d.%d degC\n",
+			 mc / 1000, mc % 1000 / 100, resume_mc / 1000, resume_mc % 1000 / 100);
+		power_supply_changed(chg->psy_chg);
+	} else if (chg->bat_hot && mc <= resume_mc) {
+		chg->bat_hot = false;
+		max77705_charger_enable(chg);
+		dev_info(chg->dev, "battery back at %d.%d degC: charging again\n",
+			 mc / 1000, mc % 1000 / 100);
+		power_supply_changed(chg->psy_chg);
+	}
+
+	queue_delayed_work(chg->wqueue, &chg->temp_work,
+			   msecs_to_jiffies(MAX77705_BAT_POLL_MS));
 }
 
 /*
@@ -622,11 +717,9 @@ static void max77705_chgin_isr_work(struct work_struct *work)
 static int max77705_wcin_ceiling(struct max77705_charger_data *chg)
 {
 	struct backlight_device *bd = NULL;
-	struct thermal_zone_device *tz;
 	int mc, ma;
 
-	tz = thermal_zone_get_zone_by_name(MAX77705_WCIN_ZONE);
-	if (IS_ERR(tz) || thermal_zone_get_temp(tz, &mc))
+	if (max77705_battery_mc(&mc))
 		return chg->wcin_max_ma;
 
 	if (!chg->wcin_hot && mc >= MAX77705_WCIN_HOT_MC) {
@@ -922,6 +1015,10 @@ static int max77705_charger_probe(struct i2c_client *i2c)
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to initialize interrupt work\n");
 
+	ret = devm_delayed_work_autocancel(dev, &chg->temp_work, max77705_temp_work);
+	if (ret)
+		return ret;
+
 	ret = max77705_charger_initialize(chg);
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to initialize charger IC\n");
@@ -968,7 +1065,13 @@ static int max77705_charger_probe(struct i2c_client *i2c)
 	if (IS_ERR(rdev))
 		return dev_err_probe(dev, PTR_ERR(rdev), "failed to register OTG regulator\n");
 
-	return devm_add_action_or_reset(dev, max77705_charger_disable, chg);
+	ret = devm_add_action_or_reset(dev, max77705_charger_stop, chg);
+	if (ret)
+		return ret;
+
+	queue_delayed_work(chg->wqueue, &chg->temp_work, 0);
+
+	return 0;
 }
 
 static const struct of_device_id max77705_charger_of_match[] = {

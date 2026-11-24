@@ -134,8 +134,15 @@
 #define MAX77705_WCIN_MAX_MA		820
 #define MAX77705_WCIN_STEP_MA		100
 #define MAX77705_WCIN_STEP_MS		500
-/* stock's wireless thermal policy, on the battery thermistor's zone */
-#define MAX77705_WCIN_ZONE		"battery-thermal"
+/* the battery thermistor's thermal zone */
+#define MAX77705_BAT_ZONE		"battery-thermal"
+/* stock's charge stop on a hot battery, for every input */
+#define MAX77705_BAT_STOP_MC		50000
+#define MAX77705_BAT_RESUME_MC		48000
+#define MAX77705_BAT_MIN_HYST_MC	1000
+#define MAX77705_BAT_POLL_MS		10000
+#define MAX77705_BAT_ZONE_TRIES		6	/* a minute before saying it is missing */
+/* stock's wireless thermal policy, on the same zone */
 #define MAX77705_WCIN_HOT_MC		41000
 #define MAX77705_WCIN_COOL_MC		38000
 #define MAX77705_WCIN_HOT_MA		600
@@ -212,6 +219,10 @@ struct max77705_charger_data {
 	int			wcin_ma;	/* WCIN limit the ramp is at */
 	int			wcin_max_ma;	/* and where it stops */
 	bool			wcin_hot;	/* held down for the battery's heat */
+	struct delayed_work	temp_work;	/* the hot-battery charge stop */
+	bool			bat_hot;	/* charging stopped for the heat */
+	int			zone_misses;	/* looks without the battery zone */
+	bool			unbinding;	/* no more temperature checks */
 	struct power_supply	*psy_chg;
 };
 
