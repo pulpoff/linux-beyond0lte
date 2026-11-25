@@ -1130,6 +1130,38 @@
 			};
 		};
 
+		usi08: usi@108e00c0 {
+			compatible = "samsung,exynos850-usi";
+			reg = <0x108e00c0 0x20>;
+			ranges;
+
+			clock-names = "pclk",
+				      "ipclk";
+			clocks = <&cmu_peric1 CLK_GOUT_PERIC1_USI08_USI_PCLK>,
+				 <&cmu_peric1 CLK_GOUT_PERIC1_USI08_USI_IPCLK>;
+
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			samsung,sysreg = <&sysreg_peric1 0x1028>;
+			status = "disabled";
+
+			hsi2c_20: i2c@108e0000 {
+				compatible = "samsung,exynosautov9-hsi2c";
+				reg = <0x108e0000 0xc0>;
+				interrupts = <GIC_SPI 418 IRQ_TYPE_LEVEL_HIGH>;
+
+				clock-names = "hsi2c",
+					      "hsi2c_pclk";
+				clocks = <&cmu_peric1 CLK_GOUT_PERIC1_USI08_USI_IPCLK>,
+					 <&cmu_peric1 CLK_GOUT_PERIC1_USI08_USI_PCLK>;
+
+				#address-cells = <1>;
+				#size-cells = <0>;
+				status = "disabled";
+			};
+		};
+
 		usi08_i2c: usi@108f00c0 {
 			compatible = "samsung,exynos850-usi";
 			reg = <0x108f00c0 0x20>;

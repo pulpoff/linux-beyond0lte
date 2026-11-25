@@ -46,7 +46,8 @@
 
 		key-wink {
 			label = "Wink Key";
-			linux,code = <KEY_COFFEE>;
+			/* Bixby: opens Recents; KEY_COFFEE is the screensaver key, which locks */
+			linux,code = <KEY_APPSELECT>;
 			gpios = <&gpa0 6 GPIO_ACTIVE_LOW>;
 		};
 
