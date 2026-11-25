@@ -10,7 +10,7 @@ The tree is stable **v7.2.15**, plus the Exynos 9820 work of
 this tree: it is built into U-Boot and handed to Linux from there (see `mobian/uboot/`).
 
 7.2.15 is the last 7.2 stable release: kernel.org has marked 7.2 end of life, and this tree stays on it.
-Use the `main` branch; every update is one commit of the whole tree, this README and `mobian/`.
+Use the `main` branch; updates are commits on it, one per change.
 
 New in this version
 ===================
@@ -131,7 +131,10 @@ On top of chiffathefox's Exynos 9820 tree (clocks, pinctrl, UFS, ACPM, the PMIC,
   answers ARP and ND) and sends the access point a keepalive every 30 s. For that suspend the radio goes to
   strict power save (PM_MAX), as the WOWL path already did, and back to its earlier mode on resume. The PCIe
   driver can be unloaded: it had no remove, and the root port stayed on the bus unmapped.
-* **Bluetooth:** CMU_PERIC1 clocks for UART_BT, the USI wrapper, hci_bcm power sequencing.
+* **Bluetooth:** CMU_PERIC1 clocks for UART_BT, the USI wrapper, hci_bcm power sequencing. hci_bcm sets
+  `HCI_UART_NO_SUSPEND_NOTIFIER` for the BCM4375 when it has its host-wake interrupt, as hci_h5 does, so the
+  Bluetooth core no longer disconnects every link and pauses scanning before a system sleep. Built and loaded on
+  the phone; that a link survives the phone's sleep is not yet verified.
 * **Sound:** `sound/soc/samsung/exynos9820-abox.c` drives ABOX's DMA and routing directly for media,
   and loads its DSP firmware (calliope) for the voice path of calls; `s10e_madera.c` machine driver; CS35L41 changes for the S10e amps.
   For a GSM gateway, two more PCMs work during a call: "Call Downlink" (`hw:0,2`, capture: the far end's voice
@@ -215,6 +218,11 @@ On top of chiffathefox's Exynos 9820 tree (clocks, pinctrl, UFS, ACPM, the PMIC,
   the hub again, holding the phone awake meanwhile. That recovery now starts as soon as a resume's first
   transfer fails: it used to wait for more errors, a transfer that worked in between cleared the count, and
   the thread then polled without end with a wakeup source held, so the phone never slept and ran hot.
+  The hub's GNSS engine is a misc device, `/dev/bcm4775-gnss`: one record per read() or write(),
+  [RPC id][payload], with RPC 28 (GNSS on and off) and 30 going to the chip and 31 coming back; one opener at a
+  time, and closing it with GNSS on switches GNSS off. On the phone the device node is there, and the
+  accelerometer, light, proximity and compass all still reach iio-sensor-proxy. A position fix needs a GNSS host
+  engine that is not part of this tree, and none is claimed here.
 * **USB:** `drivers/usb/typec/max77705.c` (Type-C port and orientation); the USB 3 DRD PHY for the
   Exynos 9820 with orientation-aware lane setup; dwc3 quirks stock sets in GUSB3PIPECTL (elastic buffer
   mode, U-state exit in P1-P3, failed U1/U2 exit to Recovery).
