@@ -15,6 +15,8 @@ U-Boot (`uboot/`)
 Built from [chiffathefox/u-boot](https://github.com/chiffathefox/u-boot) (branch exynos9820) with
 `u-boot-s10e.patch` applied. The patch adds `exynos9820-beyond0lte.dts` (copied here too, with the
 dtsi files it changes) and the boot environment `exynos-mobile.env`.
+With `exynos9820_defconfig`, the patch on exynos9820 at `dec4927b4ad5` builds the U-Boot VibeOS 0.1.4.3 and 0.1.5
+ship, and the DTB in it byte for byte.
 
 * The DTB U-Boot is built with is the one Linux gets (`booti ... ${fdtcontroladdr}`). Besides the hardware it
   has the SoC watchdog, ramoops inside stock's debug-snapshot area (a watchdog reset keeps it), and the USB PHY's

@@ -171,10 +171,10 @@ index d6c0d4fd..55fa515b 100644
  	bool "Show the U-Boot logo on the display"
  	default y if !SPLASH_SCREEN
 diff --git a/dts/upstream/include/dt-bindings/clock/exynos9820.h b/dts/upstream/include/dt-bindings/clock/exynos9820.h
-index f90e45d6..56106e84 100644
+index f90e45d6..0c4de2d1 100644
 --- a/dts/upstream/include/dt-bindings/clock/exynos9820.h
 +++ b/dts/upstream/include/dt-bindings/clock/exynos9820.h
-@@ -128,6 +128,52 @@
+@@ -128,6 +128,57 @@
  #define CLK_GOUT_PERIC0_XIU_P_PERIC0_ACLK	90
  #define CLK_NR_PERIC0				91
  
@@ -222,12 +222,17 @@ index f90e45d6..56106e84 100644
 +#define CLK_GOUT_PERIC1_I2C_CAM3_PCLK		41
 +#define CLK_GOUT_PERIC1_USI08_I2C_IPCLK		42
 +#define CLK_GOUT_PERIC1_USI08_I2C_PCLK		43
-+#define CLK_NR_PERIC1				44
++#define CLK_MOUT_PERIC1_USI08_USI_USER		44
++#define CLK_DOUT_PERIC1_USI08_USI		45
++#define CLK_GOUT_PERIC1_USI08_USI_CLK		46
++#define CLK_GOUT_PERIC1_USI08_USI_IPCLK		47
++#define CLK_GOUT_PERIC1_USI08_USI_PCLK		48
++#define CLK_NR_PERIC1				49
 +
  /* CMU_FSYS0A */
  #define CLK_MOUT_FSYS0A_BUS_USER				1
  #define CLK_MOUT_FSYS0A_USB31DRD_USER				2
-@@ -378,6 +424,40 @@
+@@ -378,6 +429,40 @@
  #define CLK_GOUT_DPU_XIU_P_DPU_ACLK					65
  #define CLK_NR_DPU							66
  
@@ -269,10 +274,20 @@ index f90e45d6..56106e84 100644
  #define CLK_MOUT_BUSC_BUS_USER					1
  #define CLK_MOUT_BUSC_CMUREF					2
 diff --git a/dts/upstream/src/arm64/exynos/exynos9820-common.dtsi b/dts/upstream/src/arm64/exynos/exynos9820-common.dtsi
-index 2fef8523..7dbfa556 100644
+index 2fef8523..d5d82ccd 100644
 --- a/dts/upstream/src/arm64/exynos/exynos9820-common.dtsi
 +++ b/dts/upstream/src/arm64/exynos/exynos9820-common.dtsi
-@@ -93,8 +93,10 @@
+@@ -46,7 +46,8 @@
+ 
+ 		key-wink {
+ 			label = "Wink Key";
+-			linux,code = <KEY_COFFEE>;
++			/* Bixby: opens Recents; KEY_COFFEE is the screensaver key, which locks */
++			linux,code = <KEY_APPSELECT>;
+ 			gpios = <&gpa0 6 GPIO_ACTIVE_LOW>;
+ 		};
+ 
+@@ -93,8 +94,10 @@
  			no-map;
  		};
  
@@ -284,7 +299,7 @@ index 2fef8523..7dbfa556 100644
  			no-map;
  		};
  
-@@ -103,7 +105,7 @@
+@@ -103,7 +106,7 @@
  			no-map;
  		};
  
@@ -325,7 +340,7 @@ index ecbd426a..c7798a81 100644
  
  		isp-thermal {
 diff --git a/dts/upstream/src/arm64/exynos/exynos9820.dtsi b/dts/upstream/src/arm64/exynos/exynos9820.dtsi
-index b769dd47..97a9b83d 100644
+index b769dd47..cc4bda48 100644
 --- a/dts/upstream/src/arm64/exynos/exynos9820.dtsi
 +++ b/dts/upstream/src/arm64/exynos/exynos9820.dtsi
 @@ -616,6 +616,42 @@
@@ -432,7 +447,7 @@ index b769dd47..97a9b83d 100644
  		usi3: usi@104b00c0 {
  			compatible = "samsung,exynos850-usi";
  			reg = <0x104b00c0 0x20>;
-@@ -819,6 +902,298 @@
+@@ -819,6 +902,330 @@
  			interrupts = <GIC_SPI 407 IRQ_TYPE_LEVEL_HIGH>;
  		};
  
@@ -664,6 +679,38 @@ index b769dd47..97a9b83d 100644
 +			};
 +		};
 +
++		usi08: usi@108e00c0 {
++			compatible = "samsung,exynos850-usi";
++			reg = <0x108e00c0 0x20>;
++			ranges;
++
++			clock-names = "pclk",
++				      "ipclk";
++			clocks = <&cmu_peric1 CLK_GOUT_PERIC1_USI08_USI_PCLK>,
++				 <&cmu_peric1 CLK_GOUT_PERIC1_USI08_USI_IPCLK>;
++
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			samsung,sysreg = <&sysreg_peric1 0x1028>;
++			status = "disabled";
++
++			hsi2c_20: i2c@108e0000 {
++				compatible = "samsung,exynosautov9-hsi2c";
++				reg = <0x108e0000 0xc0>;
++				interrupts = <GIC_SPI 418 IRQ_TYPE_LEVEL_HIGH>;
++
++				clock-names = "hsi2c",
++					      "hsi2c_pclk";
++				clocks = <&cmu_peric1 CLK_GOUT_PERIC1_USI08_USI_IPCLK>,
++					 <&cmu_peric1 CLK_GOUT_PERIC1_USI08_USI_PCLK>;
++
++				#address-cells = <1>;
++				#size-cells = <0>;
++				status = "disabled";
++			};
++		};
++
 +		usi08_i2c: usi@108f00c0 {
 +			compatible = "samsung,exynos850-usi";
 +			reg = <0x108f00c0 0x20>;
@@ -731,7 +778,7 @@ index b769dd47..97a9b83d 100644
  		cmu_fsys0a: clock-controller@10a00000 {
  			compatible = "samsung,exynos9820-cmu-fsys0a";
  			reg = <0x10a00000 0x10000>;
-@@ -832,21 +1207,46 @@
+@@ -832,21 +1239,46 @@
  				 <&cmu_top CLK_DOUT_CMU_FSYS0A_USBDP_DEBUG>;
  		};
  
@@ -782,7 +829,7 @@ index b769dd47..97a9b83d 100644
  		usbdrd: usb@10c00000 {
  			compatible = "samsung,exynos850-dwusb3";
  			ranges = <0x0 0x10c00000 0x10000>;
-@@ -865,8 +1265,37 @@
+@@ -865,8 +1297,37 @@
  				compatible = "snps,dwc3";
  				reg = <0x0 0x10000>;
  				interrupts = <GIC_SPI 241 IRQ_TYPE_LEVEL_HIGH>;
@@ -822,7 +869,7 @@ index b769dd47..97a9b83d 100644
  			};
  		};
  
-@@ -920,6 +1349,31 @@
+@@ -920,6 +1381,31 @@
  			clocks = <&cmu_fsys1 CLK_GOUT_FSYS1_SYSREG_FSYS1_PCLK>;
  		};
  
@@ -854,7 +901,7 @@ index b769dd47..97a9b83d 100644
  		pinctrl_fsys1: pinctrl@13c40000 {
  			compatible = "samsung,exynos9820-pinctrl";
  			reg = <0x13c40000 0x1000>;
-@@ -1040,6 +1494,7 @@
+@@ -1040,6 +1526,7 @@
  			reg = <0x15861900 0x20>;
  			#power-domain-cells = <0>;
  			label = "AUD";
@@ -862,7 +909,7 @@ index b769dd47..97a9b83d 100644
  		};
  
  		pd_npu0: power-domain@15861d00 {
-@@ -1127,6 +1582,8 @@
+@@ -1127,6 +1614,8 @@
  			#power-domain-cells = <0>;
  			/* power-domains = <&pd_dpu>; */
  			label = "ISPPRE";
@@ -871,7 +918,7 @@ index b769dd47..97a9b83d 100644
  		};
  
  		pd_iva: power-domain@15862580 {
-@@ -1141,8 +1598,11 @@
+@@ -1141,8 +1630,11 @@
  			reg = <0x15862600 0x20>;
  			#power-domain-cells = <0>;
  			label = "MFC";
@@ -883,7 +930,7 @@ index b769dd47..97a9b83d 100644
  		pd_vts: power-domain@15862a80 {
  			compatible = "samsung,exynos9820-pd";
  			reg = <0x15862a80 0x20>;
-@@ -1201,6 +1661,38 @@
+@@ -1201,6 +1693,38 @@
  			};
  		};
  
@@ -922,7 +969,7 @@ index b769dd47..97a9b83d 100644
  		usi_cmgp3: usi@15d600c0 {
  			compatible = "samsung,exynos850-usi";
  			reg = <0x15d600c0 0x20>;
-@@ -1253,11 +1745,237 @@
+@@ -1253,11 +1777,237 @@
  			/* Clock omitted to keep the clock driver simple */
  		};
  
@@ -1160,7 +1207,7 @@ index b769dd47..97a9b83d 100644
  		cmu_dpu: clock-controller@19000000 {
  			compatible = "samsung,exynos9820-cmu-dpu";
  			reg = <0x19000000 0x10000>;
-@@ -1270,6 +1988,40 @@
+@@ -1270,6 +2020,40 @@
  			samsung,sysreg = <&sysreg_dpu>;
  		};
  
@@ -1222,10 +1269,10 @@ index 05d3f989..4095fa41 100644
  #endif
 diff --git a/dts/upstream/src/arm64/exynos/exynos9820-beyond0lte.dts b/dts/upstream/src/arm64/exynos/exynos9820-beyond0lte.dts
 new file mode 100644
-index 00000000..fd0f10d1
+index 00000000..97683d80
 --- /dev/null
 +++ b/dts/upstream/src/arm64/exynos/exynos9820-beyond0lte.dts
-@@ -0,0 +1,1180 @@
+@@ -0,0 +1,1377 @@
 +// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 +/*
 + * Samsung Galaxy S10e (beyond0lte/SM-G970F) device tree source
@@ -1236,6 +1283,7 @@ index 00000000..fd0f10d1
 +
 +/dts-v1/;
 +#include "exynos9820-common.dtsi"
++#include <dt-bindings/leds/common.h>
 +#include <dt-bindings/usb/pd.h>
 +
 +/ {
@@ -1496,6 +1544,13 @@ index 00000000..fd0f10d1
 +};
 +
 +&pinctrl_alive {
++	/* NFC IRQ (chip -> AP, rising), held low while the chip is off */
++	nfc_irq: nfc-irq-pins {
++		samsung,pins = "gpa1-2";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;
++	};
++
 +	/* BCM4775 sensor hub: HOST_REQ (hub -> AP, level-high IRQ) */
 +	shub_host_req: shub-host-req-pins {
 +		samsung,pins = "gpa1-7";
@@ -1626,6 +1681,26 @@ index 00000000..fd0f10d1
 +		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
 +		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
 +		samsung,pin-drv = <0>;
++	};
++
++	hsi2c20_bus: hsi2c20-bus-pins {
++		samsung,pins = "gpp5-0", "gpp5-1";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++		samsung,pin-drv = <0>;
++	};
++
++	/* NFC VEN (high = off) and FIRM, as stock */
++	nfc_en: nfc-en-pins {
++		samsung,pins = "gpp6-2";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
++	};
++
++	nfc_fw: nfc-fw-pins {
++		samsung,pins = "gpp6-3";
++		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
++		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
 +	};
 +
 +	hsi2c21_bus: hsi2c21-bus-pins {
@@ -2247,6 +2322,36 @@ index 00000000..fd0f10d1
 +	};
 +};
 +
++/*
++ * S3NRN82 NFC (0x27) on USI08_USI. The rear ALS (TCS3407, 0x29) shares the
++ * bus and has no driver. VDD_NFC_1P8 (LDO22M) is on from S-Boot and has no
++ * node here, so nothing switches it; it also feeds this bus's pull-ups.
++ * The chip runs from its own flash: no firmware file is ever installed.
++ */
++&usi08 {
++	samsung,mode = <USI_MODE_I2C>;
++	status = "okay";
++};
++
++&hsi2c_20 {
++	clock-frequency = <400000>;
++	pinctrl-names = "default";
++	pinctrl-0 = <&hsi2c20_bus>;
++	status = "okay";
++
++	nfc@27 {
++		compatible = "samsung,s3fwrn5-i2c";
++		reg = <0x27>;
++		interrupts-extended = <&gpa1 2 IRQ_TYPE_EDGE_RISING>;
++		en-gpios = <&gpp6 2 GPIO_ACTIVE_HIGH>;
++		wake-gpios = <&gpp6 3 GPIO_ACTIVE_HIGH>;
++		/* PMU CLKOUT1 (OSC_NFC): the chip has no crystal */
++		clocks = <&pmu_system_controller 1>;
++		pinctrl-names = "default";
++		pinctrl-0 = <&nfc_en &nfc_fw &nfc_irq>;
++	};
++};
++
 +/* S2MPB02 camera PMIC (0x59) */
 +&usi10 {
 +	samsung,mode = <USI_MODE_I2C>;
@@ -2267,6 +2372,16 @@ index 00000000..fd0f10d1
 +	pmic@59 {
 +		compatible = "samsung,s2mpb02";
 +		reg = <0x59>;
++
++		/* switched over I2C: TORCH_EN / FLASH_EN stay as S-Boot left them */
++		flash {
++			compatible = "samsung,s2mpb02-flash";
++
++			led {
++				color = <LED_COLOR_ID_WHITE>;
++				function = LED_FUNCTION_FLASH;
++			};
++		};
 +
 +		regulators {
 +			cam_vdd_ext: buck2 {
@@ -2404,6 +2519,135 @@ index 00000000..fd0f10d1
 +		interrupts = <GIC_SPI 41 IRQ_TYPE_LEVEL_HIGH>;
 +		memory-region = <&modem_if>;
 +		samsung,pmu-syscon = <&pmu_system_controller>;
++	};
++};
++
++/*
++ * The pins through the SoC's sleep (2026-11-09). A pin's CON_PDN/PUD_PDN take over while the SoC is in
++ * SYS_SLEEP, and their reset value is input with pull-down: through a real sleep every output on these banks
++ * went low. That reset both CS35L41 amps (gph1-1/2) and the CS47L93 (gpg1-0): the next sound timed out (-110)
++ * and the AUD domain then failed to power off. These are stock's, its sleep table for this board (hw_rev 25 and
++ * later, exynos9820-beyond0lte_eur_open_gpio_06b.dtsi; this phone reads 26 on gpg1-1..5) and the pin-con-pdn of
++ * its device groups (amps, codec reset, WLAN_EN, PCIe, UFS, the sensor hub's SPI). The ALIVE and CMGP banks keep
++ * their state anyway; AUD and VTS are left out (AUD's registers are unreachable while its domain is off).
++ * s2idle never enters power-down mode: only the SoC sleep sees these.
++ */
++&pinctrl_peric0 {
++	pinctrl-names = "default";
++	pinctrl-0 = <&peric0_sleep>;
++
++	peric0_sleep: peric0-sleep-pins {
++		keep {
++			/* TSP I2C, WPC_EN, WLAN_EN, CODEC_RESET, DISP_DET */
++			samsung,pins = "gpp1-4", "gpp1-5", "gpg0-1", "gpg0-5", "gpg1-0", "gpg2-2";
++			samsung,pin-con-pdn = <EXYNOS_PIN_PDN_PREV>;
++			samsung,pin-pud-pdn = <EXYNOS_PIN_PULL_NONE>;
++		};
++
++		keep-down {
++			/* BTP_RST_N, CAM_TORCH_EN */
++			samsung,pins = "gpg0-7", "gpg2-4";
++			samsung,pin-con-pdn = <EXYNOS_PIN_PDN_PREV>;
++			samsung,pin-pud-pdn = <EXYNOS_PIN_PULL_DOWN>;
++		};
++
++		in {
++			/* GRIP I2C, SMPL_WARN_AP, HW_REV_M and HW_REV3..0 */
++			samsung,pins = "gpp2-4", "gpp2-5", "gpp3-4", "gpg1-1", "gpg1-2", "gpg1-3", "gpg1-4", "gpg1-5";
++			samsung,pin-con-pdn = <EXYNOS_PIN_PDN_INPUT>;
++			samsung,pin-pud-pdn = <EXYNOS_PIN_PULL_NONE>;
++		};
++
++		in-up {
++			/* IFC_SENSE_INT_AP, USB3.1_CON_SEL */
++			samsung,pins = "gpg0-0", "gpg0-4";
++			samsung,pin-con-pdn = <EXYNOS_PIN_PDN_INPUT>;
++			samsung,pin-pud-pdn = <EXYNOS_PIN_PULL_UP>;
++		};
++
++		in-down {
++			/* not connected */
++			samsung,pins = "gpp2-6", "gpp2-7", "gpg2-3", "gpg4-3";
++			samsung,pin-con-pdn = <EXYNOS_PIN_PDN_INPUT>;
++			samsung,pin-pud-pdn = <EXYNOS_PIN_PULL_DOWN>;
++		};
++
++		low {
++			/* CAM_RST_N */
++			samsung,pins = "gpg2-6";
++			samsung,pin-con-pdn = <EXYNOS_PIN_PDN_OUT0>;
++			samsung,pin-pud-pdn = <EXYNOS_PIN_PULL_DOWN>;
++		};
++	};
++};
++
++&pinctrl_peric1 {
++	pinctrl-names = "default";
++	pinctrl-0 = <&peric1_sleep>;
++
++	peric1_sleep: peric1-sleep-pins {
++		keep {
++			/* DISP_TE, SHUB SPI (CLK, MOSI, MISO, SS_N), BTP_LDO_EN, SPK and RCV AMP_RST_N */
++			samsung,pins = "gpd0-0", "gph0-0", "gph0-1", "gph0-2", "gph0-3", "gph1-0", "gph1-1", "gph1-2";
++			samsung,pin-con-pdn = <EXYNOS_PIN_PDN_PREV>;
++			samsung,pin-pud-pdn = <EXYNOS_PIN_PULL_NONE>;
++		};
++
++		in {
++			/* NFC/HRM, SUB_PMIC, CAM and CAM_AF I2C, CP_HW_REV3..0 */
++			samsung,pins = "gpp5-0", "gpp5-1", "gpp6-0", "gpp6-1", "gpc0-0", "gpc0-1", "gpc0-6", "gpc0-7",
++				       "gpg3-1", "gpg3-2", "gpg3-3", "gpg3-4";
++			samsung,pin-con-pdn = <EXYNOS_PIN_PDN_INPUT>;
++			samsung,pin-pud-pdn = <EXYNOS_PIN_PULL_NONE>;
++		};
++
++		in-down {
++			/* not connected */
++			samsung,pins = "gpp4-6", "gpp4-7", "gpp5-4", "gpp5-5", "gpc1-0", "gpc1-1", "gpc1-2", "gpc1-3";
++			samsung,pin-con-pdn = <EXYNOS_PIN_PDN_INPUT>;
++			samsung,pin-pud-pdn = <EXYNOS_PIN_PULL_DOWN>;
++		};
++
++		low {
++			/* XBOOTLDO0 */
++			samsung,pins = "gpd0-2";
++			samsung,pin-con-pdn = <EXYNOS_PIN_PDN_OUT0>;
++			samsung,pin-pud-pdn = <EXYNOS_PIN_PULL_NONE>;
++		};
++
++		low-down {
++			/* MST_DATA, MST_EN, MST_PWR_EN, CAM_FLASH_EN */
++			samsung,pins = "gpp4-4", "gpp4-5", "gpg3-5", "gpg3-6";
++			samsung,pin-con-pdn = <EXYNOS_PIN_PDN_OUT0>;
++			samsung,pin-pud-pdn = <EXYNOS_PIN_PULL_DOWN>;
++		};
++
++		i2c38 {
++			/* hsi2c38: stock sets only its pull */
++			samsung,pins = "gph0-6", "gph0-7";
++			samsung,pin-pud-pdn = <EXYNOS_PIN_PULL_NONE>;
++		};
++	};
++};
++
++&pinctrl_fsys1 {
++	pinctrl-names = "default";
++	pinctrl-0 = <&fsys1_sleep>;
++
++	fsys1_sleep: fsys1-sleep-pins {
++		keep {
++			/* PCIE_PERST_N, UFS_REFCLK, UFS_RST_N */
++			samsung,pins = "gpf2-2", "gpf3-0", "gpf3-1";
++			samsung,pin-con-pdn = <EXYNOS_PIN_PDN_PREV>;
++			samsung,pin-pud-pdn = <EXYNOS_PIN_PULL_NONE>;
++		};
++
++		in {
++			/* PCIE_CLK_REQ_L */
++			samsung,pins = "gpf2-0";
++			samsung,pin-con-pdn = <EXYNOS_PIN_PDN_INPUT>;
++			samsung,pin-pud-pdn = <EXYNOS_PIN_PULL_NONE>;
++		};
 +	};
 +};
 diff --git a/include/video_font_ter32x64.h b/include/video_font_ter32x64.h
