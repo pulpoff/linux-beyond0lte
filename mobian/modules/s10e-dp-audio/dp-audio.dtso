@@ -1,0 +1,44 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * PDMA0 (a PL330, BLK_BUSC) and a node for the DisplayPort audio test, under soc@0 of U-Boot's DT. That DT
+ * has no __symbols__, so the outside phandles are numbers read from the live tree: 0x9f = CMU_BUSC
+ * (clock-controller@1a200000). Clocks from include/dt-bindings/clock/exynos9820.h: 67 PDMA0_ACLK,
+ * 69/70 QE_PDMA0 ACLK/PCLK, 91 VGEN_PDMA0. GIC SPI 64 = INTREQ__PDMA0; request 28 = DisplayPort (stock
+ * exynos9820.dts displayport_adma).
+ *
+ * The container is disabled so the overlay notifier makes no platform devices of it: the module populates it,
+ * and the populate path is the one that makes a primecell an AMBA device.
+ */
+/dts-v1/;
+/plugin/;
+
+/ {
+	fragment@0 {
+		target-path = "/soc@0";
+
+		__overlay__ {
+			s10e-dp-audio {
+				#address-cells = <1>;
+				#size-cells = <1>;
+				ranges;
+				status = "disabled";
+
+				pdma0: dma-controller@1a2e0000 {
+					compatible = "arm,pl330", "arm,primecell";
+					reg = <0x1a2e0000 0x1000>;
+					interrupts = <0 64 4>;
+					clocks = <0x9f 67>;
+					clock-names = "apb_pclk";
+					#dma-cells = <1>;
+				};
+
+				audio {
+					compatible = "s10e,dp-audio-test";
+					dmas = <&pdma0 28>;
+					dma-names = "tx";
+					clocks = <0x9f 67>, <0x9f 69>, <0x9f 70>, <0x9f 91>;
+				};
+			};
+		};
+	};
+};

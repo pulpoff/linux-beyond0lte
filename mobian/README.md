@@ -143,6 +143,11 @@ Out-of-tree modules (`modules/`)
 
 * `s10e-panel-bl`: panel brightness (AOR) over the DSIM command FIFO, as `/sys/class/backlight/s10e-panel`.
 * `s10e-aud-probe`: a register probe for the audio block, for debugging.
+* `s10e-dp-audio`: sound to a TV through a USB-C dock, a test module: the DisplayPort controller's audio, fed by
+  PDMA0, as the ALSA card "S10eHDMI" with an "HDMI Jack". PDMA0 is not in U-Boot's device tree, so the module
+  carries it as an overlay: `build.sh` compiles `dp-audio.dtso` into `dp-audio-dtbo.h` and builds the module.
+* `s10e-mif-sleep`: the DRAM controller (MIF) at its lowest level while the phone sleeps (`sleep_mhz`, 421 by
+  default), its old rate back on resume.
 
 Build against the kernel with `make -C <build> M=$PWD LOCALVERSION=`.
 
