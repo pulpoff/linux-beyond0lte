@@ -10,7 +10,7 @@ Path abbreviations:
 
 | Abbrev | Path |
 |---|---|
-| `LK/` | `~/S10e/src/lineage-kernel` (stock Samsung 4.14) |
+| `LK/` | `$S10E/src/lineage-kernel` (stock Samsung 4.14) |
 | `FI/` | `LK/drivers/media/platform/exynos/fimc-is2` (the built camera stack, see 0.1) |
 | `MF/` | `FI/sensor/module_framework` (`cis/` = sensor drivers, `modules/` = module glue) |
 | `CSI2/` | `FI/sensor/csi2` |
@@ -18,8 +18,8 @@ Path abbreviations:
 | `SDT/` | `LK/arch/arm64/boot/dts/samsung` (`CAM` = `SDT/exynos9820-beyond0lte_camera.dtsi`, `COM` = `SDT/exynos9820-beyond0lte_common.dtsi`) |
 | `XDT/` | `LK/arch/arm64/boot/dts/exynos` (`SOC` = `XDT/exynos9820.dts`, `SCAM` = `XDT/exynos9820-camera.dtsi`) |
 | `CAL/` | `LK/drivers/soc/samsung/cal-if/exynos9820` |
-| `ML/` | `~/S10e/src/linux-9820-7.2.13` |
-| `UDT/` | `~/S10e/src/u-boot/dts/upstream/src/arm64/exynos` (the live board DT) |
+| `ML/` | `$S10E/src/linux-9820-7.2.13` |
+| `UDT/` | `$S10E/src/u-boot/dts/upstream/src/arm64/exynos` (the live board DT) |
 
 ---
 

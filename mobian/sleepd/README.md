@@ -5,7 +5,7 @@ it awake. Calls, SMS, a unicast packet on Wi-Fi, the power button, a double tap 
 wake it.
 
 Mobian's own policy is a laptop's. gsd-power suspends after 15 idle minutes, through logind, and everything then
-treats the resume as a lid opening: Phosh turns the screen on, NetworkManager takes Wi-Fi down first. So this daemon
+treats the resume as a lid opening: the shell turns the screen on, NetworkManager takes Wi-Fi down first. So this daemon
 suspends the kernel itself, the way Android does. logind's suspend targets stay masked, and install.sh sets
 gsd-power's `sleep-inactive-*-type` to `nothing`. No program hears about a sleep. A call that wakes the phone rings
 on a screen that only the call turns on.
@@ -27,7 +27,7 @@ on a screen that only the call turns on.
   `boot_grace` s after boot, while the CP makes its one-off file requests.
 
 The panel keeps its last frame while the phone sleeps. With the AOD showing, an RTC alarm wakes the phone at every
-minute for `aod_hold` s, so Phosh can draw the new time. While the panel's own clock runs (the S6E3FA7's
+minute for `aod_hold` s, so the shell can draw the new time. While the panel's own clock runs (the S6E3FA7's
 `self_clock` reads `analog`: the panel ticks its hands by itself) the alarm comes once an hour instead, for the
 date and the battery.
 

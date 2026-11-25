@@ -11,8 +11,8 @@ set -eu
 TAR=$1
 IMG=$2
 Z=$(cd "$(dirname "$0")" && pwd)
-K=${S10E:-$HOME/S10e}/kit
-INITRD=${S10E:-$HOME/S10e}/out/initramfs-public.cpio.gz
+K=${S10E:?}/kit
+INITRD=${S10E:?}/out/initramfs-public.cpio.gz
 M=$(dirname "$IMG")/mnt.$$
 [ ! -e "$IMG" ] || { echo "$IMG exists" >&2; exit 1; }
 [ -s "$INITRD" ] || { echo "no $INITRD (kit/build.sh with PUBLIC=1 INIT=init-mainline RAW=...)" >&2; exit 1; }
