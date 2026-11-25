@@ -1,5 +1,7 @@
 # Neo launcher for Phosh
 
+From the Phosh image the phone ran before VibeOS; VibeOS ships neither Phosh nor these apps.
+
 Neo replaces Phosh's app grid as the home screen; Phosh keeps the lock screen, notifications, quick settings, the
 power dialog, calls and the keyboard. Choosing the launcher: `gsettings set de.yesman.neo launcher neo|phosh`
 (Mobile Settings device page: to do).

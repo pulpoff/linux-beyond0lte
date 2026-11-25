@@ -2,7 +2,8 @@ Linux 7.2.15 for the Samsung Galaxy S10e (beyond0lte, SM-G970F)
 ================================================================
 
 Mainline Linux for the Samsung Galaxy S10e (SM-G970F, codename beyond0lte, Exynos 9820). It runs the
-phone on **Mobian** (Debian trixie with Mobian's repository) with Phosh, next to LineageOS.
+phone on **[VibeOS](https://github.com/pulpoff/vibeos)** (Debian with Mobian's repository and VibeOS's GNOME
+Shell), next to LineageOS.
 
 The tree is stable **v7.2.15**, plus the Exynos 9820 work of
 [chiffathefox/exynos-9820-mainline-linux](https://github.com/chiffathefox/exynos-9820-mainline-linux)
@@ -101,7 +102,7 @@ On top of chiffathefox's Exynos 9820 tree (clocks, pinctrl, UFS, ACPM, the PMIC,
 * **Display:** `drivers/gpu/drm/tiny/exynos9820-decon-kms.c` keeps the bootloader's DECON/DSIM setup and
   turns it into a real KMS device; `panel-samsung-s6e3fa7-beyond0.c`, which also loads the panel's mDNIe
   colour tables (Samsung's "Natural" mode: the bootloader leaves a violet-tinted one); simpledrm reports a DSI connector
-  so Phosh treats the panel as built-in. Panel self-refresh (`exynos9820-decon-kms.psr`, on by default): the TE
+  so the shell treats the panel as built-in. Panel self-refresh (`exynos9820-decon-kms.psr`, on by default): the TE
   trigger starts a frame only when the picture has changed, so a still screen or the AOD clock costs no frames
   between updates.
 * **Always On Display:** the panel driver's `lpm` (sysfs: 0, or 2, 10, 30 or 60 nit) puts the S6E3FA7 in Samsung's
@@ -276,8 +277,9 @@ mobian/
 =======
 
 The userspace half: U-Boot's boot menu and the S10e device tree, the initramfs init, the kernel config,
-the services and configuration the hardware needs on Mobian, the sleep daemon, the recovery zip, the camera
-stack, and the Neo launcher and apps the image ships. See `mobian/README.md`.
+the services and configuration the hardware needs on Debian with Mobian's repository, the sleep daemon, the
+camera stack, and the recovery zip, Neo launcher and apps of the Phosh image the phone ran before VibeOS. See
+`mobian/README.md`.
 
 `mobian/` is as it was in the 7.2.13 release (2026-11-03), apart from `kernel.config`, which is now the 7.2.15
 configuration the phone runs (it has `CONFIG_EXYNOS9820_SLEEP` and the flash LED driver). Its device tree

@@ -3,6 +3,9 @@
 Debian (Mobian) with Phosh and the Neo launcher on mainline Linux 7.2.13, next to Android, on the Galaxy S10e
 (SM-G970F, **beyond0lte**, Exynos 9820). For **adb sideload** from LineageOS recovery.
 
+This is the zip of the Phosh image the phone ran before VibeOS; [VibeOS](https://github.com/pulpoff/vibeos) builds its own S10e zip
+(its `image/`).
+
 ## What the zip does
 
 1. Checks the device is `beyond0lte`.

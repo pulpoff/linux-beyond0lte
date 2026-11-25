@@ -1,5 +1,5 @@
-import re,sys
-H='~/S10e/src/lineage-kernel/drivers/video/fbdev/exynos/panel/s6e3fa7/s6e3fa7_beyond0_a3_s0_panel_mdnie.h'
+import os,re,sys
+H=os.environ['S10E']+'/src/lineage-kernel/drivers/video/fbdev/exynos/panel/s6e3fa7/s6e3fa7_beyond0_a3_s0_panel_mdnie.h'
 s=open(H).read()
 def block(name):
     i=s.index('beyond0_a3_s0_'+name+'[')

@@ -10,8 +10,8 @@
 set -eu
 IMG=$1; OUT=$2
 Z=$(cd "$(dirname "$0")" && pwd)
-UBOOT=${S10E:-$HOME/S10e}/out/v46-dp.img
-BIN=$HOME/yesman-zip/lineage-bin/update-binary
+UBOOT=${S10E:?}/out/v46-dp.img
+BIN=${ZIPSRC:?}/lineage-bin/update-binary
 W=$OUT/zip.$$
 mkdir -p "$W/META-INF/com/google/android"
 cp "$BIN" "$W/META-INF/com/google/android/update-binary"

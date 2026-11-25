@@ -2,12 +2,15 @@ Mobian on the Galaxy S10e (beyond0lte, SM-G970F)
 ===============================================
 
 The userspace half of running this kernel on the phone: the boot loader, the initramfs, the services and
-configuration the hardware needs on Mobian (Debian trixie with Mobian's repository, Phosh), the daemon that
-puts the phone to sleep, the recovery zip that installs it, the camera stack, and the Neo launcher and apps
-the image ships.
+configuration the hardware needs on Debian with Mobian's repository, the daemon that puts the phone to sleep,
+the camera stack, and the recovery zip, Neo launcher and apps of the Phosh image the phone ran before VibeOS.
+[VibeOS](https://github.com/pulpoff/vibeos) does not use Phosh and builds its own images.
 The kernel is the rest of this repository; see the top-level README.md.
 
-`rootfs/` mirrors where each file goes on the phone.
+`rootfs/` mirrors where each file goes on the phone. The build scripts take their folders from the environment:
+`S10E` (the work directory, with `src/`, `kit/`, `backup/` and `out/`), `GTS4LV` (the Tab S5e's, whose
+Debian packages and `kit/tools/` the debug recovery reuses), `ZIPSRC` (the folder with LineageOS's
+`update-binary`) and `AUTHORIZED_KEYS` (the public key the debug recovery lets in as root).
 
 U-Boot (`uboot/`)
 =================
@@ -135,6 +138,8 @@ Cameras (`camera/`)
 
 Launcher and apps (`apps/`)
 ===========================
+
+From the Phosh image the phone ran before VibeOS; VibeOS ships neither Phosh nor these apps.
 
 * `neo-launcher/`: the Neo home screen for Phosh (`c/` is the C/GTK 3 launcher the image runs; `src/` is
   the older GJS one), with its schema, icon packs and parallax wallpaper support.
