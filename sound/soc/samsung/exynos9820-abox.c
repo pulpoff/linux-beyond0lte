@@ -163,7 +163,7 @@ static const u16 cmu_aud_qch[] = {
 #define ABOX_WDMA_MIC			1	/* hard-wired to SIFM0 */
 
 /*
- * A GSM gateway (gsm2sip) needs the call digitally, both ways: the far end's
+ * A GSM gateway needs the call digitally, both ways: the far end's
  * voice as the CP sends it, and a voice of its own in place of the mics.
  * Two more PCMs on the card, used only during a call:
  *
@@ -171,7 +171,7 @@ static const u16 cmu_aud_qch[] = {
  *    anything is mixed into it (SIFS0 also carries VPCMOUT, the processed
  *    uplink, so WDMA3 would hand the far end's voice back with our own on
  *    top). 2 ch S16, read out on a 1 ms timer. The firmware's ring is one
- *    VSS frame (0x500 bytes) and in the 2026-11-02 calls a new one came
+ *    VSS frame (0x500 bytes) and a new one comes
  *    every 20 ms: 16 kHz, not the 32 kHz RDMA4 is set to. Read as 32 kHz
  *    the far end heard the voice an octave up, so the PCM takes 16000 too.
  *  - "Call Uplink" playback: RDMA6, which the call routing already sends
