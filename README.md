@@ -13,6 +13,15 @@ this tree: it is built into U-Boot and handed to Linux from there (see `mobian/u
 7.2.15 is the last 7.2 stable release: kernel.org has marked 7.2 end of life, and this tree stays on it.
 Use the `main` branch; updates are commits on it, one per change.
 
+Releases
+========
+
+The source of the kernel each VibeOS release ships for the Galaxy S10e is tagged here; each tag's message says
+what that release's build took from it:
+
+- `vibeos-0.1.4.3`: VibeOS 0.1.4.3, kernel release `7.2.15-s10e` (a branch off the 2026-11-12 state of `main`).
+- `vibeos-0.1.5`: VibeOS 0.1.5, kernel release `7.2.15-s10e-2`, which `main` contains.
+
 New in this version
 ===================
 
